@@ -21,6 +21,7 @@ final class MenuBarController: NSObject {
     private let panel = HiddenItemsPanel()
     private lazy var contextMenu = makeContextMenu()
     private var cachedSnapshots: [StatusItemSnapshot] = []
+    private var nativeDragMonitor: Any?
 
     private var state: State = .shown
 
@@ -111,15 +112,8 @@ final class MenuBarController: NSObject {
         dividerItem.length = 1
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(120)) { [weak self] in
             guard let self else { return }
-            self.refreshSnapshotCache(includeVisibleItems: true)
-            self.panel.showArrangement(
-                snapshots: self.cachedSnapshots,
-                pinnedCount: 0,
-                onChange: { [weak self] snapshots, visibleCount in
-                    self?.applyArrangement(snapshots, visibleCount: visibleCount)
-                },
-                onClose: { [weak self] in self?.hideNativeItems() }
-            )
+            self.refreshLayoutBar()
+            self.startNativeDragMonitor()
         }
     }
 
@@ -130,6 +124,7 @@ final class MenuBarController: NSObject {
 
     private func hideNativeItems() {
         panel.close()
+        stopNativeDragMonitor()
         // Ice uses the same approach: a transparent, wide status item moves the items after it
         // out of the visible menu bar. Keep the control item to the divider's left in the status
         // bar; macOS remembers that position through autosaveName.
@@ -169,16 +164,46 @@ final class MenuBarController: NSObject {
             try? await Task.sleep(for: .milliseconds(100))
             guard let self else { return }
             for snapshot in visible.reversed() {
-                _ = self.snapshotter.move(windowID: snapshot.id, nextTo: CGWindowID(dividerID), placingRight: true)
+                _ = self.snapshotter.move(windowID: snapshot.id, nextTo: CGWindowID(truncatingIfNeeded: dividerID), placingRight: true)
                 try? await Task.sleep(for: .milliseconds(110))
             }
             for snapshot in hidden {
-                _ = self.snapshotter.move(windowID: snapshot.id, nextTo: CGWindowID(dividerID), placingRight: false)
+                _ = self.snapshotter.move(windowID: snapshot.id, nextTo: CGWindowID(truncatingIfNeeded: dividerID), placingRight: false)
                 try? await Task.sleep(for: .milliseconds(110))
             }
             try? await Task.sleep(for: .milliseconds(180))
             self.refreshSnapshotCache()
             self.hideNativeItems()
+        }
+    }
+
+    private func refreshLayoutBar() {
+        refreshSnapshotCache(includeVisibleItems: true)
+        panel.showArrangement(
+            snapshots: cachedSnapshots,
+            pinnedCount: 0,
+            onChange: { [weak self] snapshots, visibleCount in
+                self?.applyArrangement(snapshots, visibleCount: visibleCount)
+            },
+            onClose: { [weak self] in self?.hideNativeItems() }
+        )
+    }
+
+    private func startNativeDragMonitor() {
+        guard nativeDragMonitor == nil else { return }
+        nativeDragMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp]) { [weak self] event in
+            guard event.modifierFlags.contains(.command) else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(180)) {
+                guard let self, self.state == .arranging else { return }
+                self.refreshLayoutBar()
+            }
+        }
+    }
+
+    private func stopNativeDragMonitor() {
+        if let nativeDragMonitor {
+            NSEvent.removeMonitor(nativeDragMonitor)
+            self.nativeDragMonitor = nil
         }
     }
 
