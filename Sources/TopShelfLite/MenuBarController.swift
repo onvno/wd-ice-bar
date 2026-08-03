@@ -51,7 +51,7 @@ final class MenuBarController: NSObject {
     private let panel = HiddenItemsPanel()
     private lazy var contextMenu = makeContextMenu()
     private var cachedSnapshots: [StatusItemSnapshot] = []
-    private var menuBarClickMonitor: Any?
+    private var outsideClickMonitor: Any?
     private var iconChoice: IconChoice {
         get { IconChoice(rawValue: UserDefaults.standard.string(forKey: "TopShelfLite.IconChoice") ?? "") ?? .grid }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "TopShelfLite.IconChoice") }
@@ -186,7 +186,7 @@ final class MenuBarController: NSObject {
 
     private func hideNativeItems() {
         panel.close()
-        stopMenuBarClickMonitor()
+        stopOutsideClickMonitor()
         // Ice uses the same approach: a transparent, wide status item moves the items after it
         // out of the visible menu bar. Keep the control item to the divider's left in the status
         // bar; macOS remembers that position through autosaveName.
@@ -206,15 +206,12 @@ final class MenuBarController: NSObject {
         )
         state = .shown
         updateTriggerIcon(isHidden: false)
-        startMenuBarClickMonitor()
+        startOutsideClickMonitor()
     }
 
-    private func startMenuBarClickMonitor() {
-        guard menuBarClickMonitor == nil else { return }
-        menuBarClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
-            let point = event.locationInWindow
-            guard let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }) else { return }
-            guard point.y >= screen.frame.maxY - NSStatusBar.system.thickness else { return }
+    private func startOutsideClickMonitor() {
+        guard outsideClickMonitor == nil else { return }
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] _ in
             DispatchQueue.main.async {
                 guard let self, self.state == .shown else { return }
                 self.panel.close()
@@ -222,10 +219,10 @@ final class MenuBarController: NSObject {
         }
     }
 
-    private func stopMenuBarClickMonitor() {
-        if let menuBarClickMonitor {
-            NSEvent.removeMonitor(menuBarClickMonitor)
-            self.menuBarClickMonitor = nil
+    private func stopOutsideClickMonitor() {
+        if let outsideClickMonitor {
+            NSEvent.removeMonitor(outsideClickMonitor)
+            self.outsideClickMonitor = nil
         }
     }
 

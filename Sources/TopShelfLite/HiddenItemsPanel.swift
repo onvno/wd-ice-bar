@@ -3,6 +3,7 @@ import AppKit
 final class HiddenItemsPanel: NSPanel {
     private var closeHandler: (() -> Void)?
     private var activateHandler: ((CGWindowID) -> Void)?
+    private var isDismissing = false
 
     init() {
         super.init(
@@ -27,15 +28,28 @@ final class HiddenItemsPanel: NSPanel {
         activateHandler = onActivate
         contentView = makeContent(snapshots: snapshots)
         positionAtRightEdge()
+        alphaValue = 0
         orderFrontRegardless()
+        animateAlpha(to: 1)
     }
 
     override func close() {
+        guard !isDismissing else { return }
         let handler = closeHandler
         closeHandler = nil
         activateHandler = nil
-        super.close()
-        handler?()
+        guard isVisible else {
+            handler?()
+            return
+        }
+        isDismissing = true
+        animateAlpha(to: 0) { [weak self] in
+            guard let self else { return }
+            self.orderOut(nil)
+            self.alphaValue = 1
+            self.isDismissing = false
+            handler?()
+        }
     }
 
     private func makeContent(snapshots: [StatusItemSnapshot]) -> NSView {
@@ -119,5 +133,15 @@ final class HiddenItemsPanel: NSPanel {
             y: screen.frame.maxY - menuBarHeight - size.height - 8
         )
         setFrame(CGRect(origin: origin, size: size), display: true)
+    }
+
+    private func animateAlpha(to value: CGFloat, completion: (() -> Void)? = nil) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.16
+            context.timingFunction = CAMediaTimingFunction(name: .linear)
+            animator().alphaValue = value
+        } completionHandler: {
+            completion?()
+        }
     }
 }
