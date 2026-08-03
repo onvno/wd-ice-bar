@@ -286,7 +286,7 @@ final class MenuBarController: NSObject {
     private func activateNativeItem(_ windowID: CGWindowID) {
         // Do not expand the complete hidden section. Move only the selected real item across
         // the divider, click it in-place, then move it back after its native interface closes.
-        guard let dividerWindow = dividerItem.button?.window else {
+        guard let dividerWindowID = snapshotter.statusItemWindowID(titled: ItemName.divider) else {
             hideNativeItems()
             return
         }
@@ -294,7 +294,6 @@ final class MenuBarController: NSObject {
         temporaryActivationTask?.cancel()
         state = .shown
 
-        let dividerWindowID = CGWindowID(dividerWindow.windowNumber)
         temporaryActivationTask = Task { [weak self, snapshotter] in
             guard let self else { return }
             guard let context = await snapshotter.temporarilyShowAndClick(
