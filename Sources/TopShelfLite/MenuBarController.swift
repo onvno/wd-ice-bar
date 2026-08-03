@@ -21,6 +21,12 @@ final class MenuBarController: NSObject {
     private let panel = HiddenItemsPanel()
     private lazy var contextMenu = makeContextMenu()
     private var cachedSnapshots: [StatusItemSnapshot] = []
+    private var pinnedCount: Int
+    private var pinnedStack: NSStackView?
+
+    // New namespace: do not reuse the experimental all-status-item selection, which could
+    // include macOS-owned entries such as the clock and Control Center.
+    private static let pinnedCountKey = "TopShelfLite.HiddenCachePinnedItemCount.v1"
 
     private var state: State = .shown
 
@@ -32,6 +38,9 @@ final class MenuBarController: NSObject {
         let dividerKey = "NSStatusItem Preferred Position \(ItemName.divider)"
         if defaults.object(forKey: triggerKey) == nil { defaults.set(0, forKey: triggerKey) }
         if defaults.object(forKey: dividerKey) == nil { defaults.set(1, forKey: dividerKey) }
+        pinnedCount = defaults.object(forKey: Self.pinnedCountKey) == nil
+            ? 0
+            : defaults.integer(forKey: Self.pinnedCountKey)
 
         dividerItem = NSStatusBar.system.statusItem(withLength: 1)
         triggerItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -63,6 +72,7 @@ final class MenuBarController: NSObject {
         button.target = self
         button.action = #selector(toggle)
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        renderPinnedBar()
     }
 
     private func configureDivider() {
@@ -84,7 +94,6 @@ final class MenuBarController: NSObject {
             panel.close()
             hideNativeItems()
         case .arranging:
-            refreshSnapshotCache()
             hideNativeItems()
         }
     }
@@ -92,7 +101,7 @@ final class MenuBarController: NSObject {
     private func makeContextMenu() -> NSMenu {
         let menu = NSMenu()
         let arrange = NSMenuItem(
-            title: "调整顶部图标（按住 ⌘ 拖动）",
+            title: "调整顶部 / 隐藏图标（⌘ 拖动分隔标记）",
             action: #selector(enterArrangementMode),
             keyEquivalent: ""
         )
@@ -107,18 +116,21 @@ final class MenuBarController: NSObject {
 
     @objc private func enterArrangementMode() {
         panel.close()
-        // A visible, narrow divider gives the user a stable landmark. While this mode is on,
-        // macOS's standard ⌘-drag can move a status item to either side of it.
-        dividerItem.length = 16
-        dividerItem.button?.image = NSImage(systemSymbolName: "line.3.horizontal", accessibilityDescription: "Hidden item boundary")
-        dividerItem.button?.image?.isTemplate = true
-        dividerItem.button?.isEnabled = true
-        triggerItem.button?.toolTip = "调整中：按住 ⌘ 拖动图标；点击后按当前顺序隐藏"
+        guard !cachedSnapshots.isEmpty else {
+            showPanel()
+            return
+        }
+        panel.showArrangement(
+            snapshots: cachedSnapshots,
+            pinnedCount: pinnedCount,
+            onPinnedCountChange: { [weak self] count in self?.setPinnedCount(count) },
+            onClose: { [weak self] in self?.hideNativeItems() }
+        )
+        triggerItem.button?.toolTip = "调整中：按住 ⌘ 拖动蓝色分隔标记"
         state = .arranging
     }
 
     @objc private func hideNativeItemsFromMenu() {
-        refreshSnapshotCache()
         hideNativeItems()
     }
 
@@ -127,16 +139,15 @@ final class MenuBarController: NSObject {
         // Ice uses the same approach: a transparent, wide status item moves the items after it
         // out of the visible menu bar. Keep the control item to the divider's left in the status
         // bar; macOS remembers that position through autosaveName.
-        dividerItem.button?.image = nil
-        dividerItem.button?.isEnabled = false
         dividerItem.length = 10_000
-        triggerItem.button?.toolTip = "显示隐藏的菜单栏图标（右键可调整）"
+        renderPinnedBar()
+        triggerItem.button?.toolTip = "显示隐藏图标（右键可调整顶部 / 隐藏图标）"
         state = .hidden
     }
 
     private func showPanel() {
         panel.show(
-            snapshots: cachedSnapshots,
+            snapshots: Array(cachedSnapshots.dropFirst(pinnedCount)),
             onClose: { [weak self] in self?.hideNativeItems() },
             onActivate: { [weak self] windowID in self?.activateNativeItem(windowID) }
         )
@@ -151,7 +162,66 @@ final class MenuBarController: NSObject {
         )
         if !snapshots.isEmpty {
             cachedSnapshots = snapshots
+            pinnedCount = min(pinnedCount, snapshots.count)
+            renderPinnedBar()
         }
+    }
+
+    private func setPinnedCount(_ count: Int) {
+        pinnedCount = min(max(count, 0), cachedSnapshots.count)
+        UserDefaults.standard.set(pinnedCount, forKey: Self.pinnedCountKey)
+        renderPinnedBar()
+    }
+
+    private func renderPinnedBar() {
+        guard let hostButton = triggerItem.button else { return }
+        pinnedStack?.removeFromSuperview()
+
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 1
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        for snapshot in cachedSnapshots.prefix(pinnedCount) {
+            let button = NSButton(image: snapshot.image, target: self, action: #selector(activatePinnedItem))
+            button.imageScaling = .scaleProportionallyDown
+            button.setFrameSize(CGSize(width: 24, height: 20))
+            button.bezelStyle = .regularSquare
+            button.isBordered = false
+            button.contentTintColor = .white
+            button.toolTip = snapshot.label
+            button.identifier = NSUserInterfaceItemIdentifier(String(snapshot.id))
+            stack.addArrangedSubview(button)
+        }
+
+        let toggleButton = NSButton(
+            image: NSImage(systemSymbolName: "rectangle.3.group.fill", accessibilityDescription: "Show hidden menu bar items")!,
+            target: self,
+            action: #selector(toggle)
+        )
+        toggleButton.imageScaling = .scaleProportionallyDown
+        toggleButton.setFrameSize(CGSize(width: 24, height: 20))
+        toggleButton.bezelStyle = .regularSquare
+        toggleButton.isBordered = false
+        toggleButton.toolTip = "显示隐藏图标；右键调整"
+        toggleButton.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        stack.addArrangedSubview(toggleButton)
+
+        hostButton.image = nil
+        hostButton.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: hostButton.leadingAnchor, constant: 3),
+            stack.trailingAnchor.constraint(equalTo: hostButton.trailingAnchor, constant: -3),
+            stack.centerYAnchor.constraint(equalTo: hostButton.centerYAnchor),
+        ])
+        pinnedStack = stack
+        triggerItem.length = CGFloat(max(1, pinnedCount) * 25 + 30)
+    }
+
+    @objc private func activatePinnedItem(_ sender: NSButton) {
+        guard let value = sender.identifier?.rawValue, let id = UInt32(value) else { return }
+        activateNativeItem(id)
     }
 
     private func activateNativeItem(_ windowID: CGWindowID) {
