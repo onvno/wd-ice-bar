@@ -135,6 +135,14 @@ final class MenuBarController: NSObject {
         arrange.target = self
         menu.addItem(arrange)
 
+        let refresh = NSMenuItem(
+            title: "刷新隐藏图标",
+            action: #selector(refreshHiddenItems),
+            keyEquivalent: ""
+        )
+        refresh.target = self
+        menu.addItem(refresh)
+
         let icons = NSMenu(title: "更换图标")
         for choice in IconChoice.allCases {
             let item = NSMenuItem(title: choice.title, action: #selector(selectIcon), keyEquivalent: "")
@@ -195,6 +203,15 @@ final class MenuBarController: NSObject {
     @objc private func openMenuBarSettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.ControlCenter-Settings.extension") else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    @objc private func refreshHiddenItems() {
+        // Unlike a routine refresh, a user-requested refresh must be allowed to replace an old
+        // non-empty cache with an empty result when the hidden apps have all gone away.
+        refreshSnapshotCache(replacingEmptyCache: true)
+        if state == .shown {
+            showPanel()
+        }
     }
 
     @objc private func toggleLaunchAtLogin() {
@@ -268,13 +285,13 @@ final class MenuBarController: NSObject {
         button.image?.isTemplate = true
     }
 
-    private func refreshSnapshotCache() {
+    private func refreshSnapshotCache(replacingEmptyCache: Bool = false) {
         let snapshots = snapshotter.capture(
             excluding: getpid(),
             excludingTitles: [ItemName.divider, ItemName.trigger],
             maximumX: dividerItem.button?.window?.frame.maxX
         )
-        if !snapshots.isEmpty {
+        if !snapshots.isEmpty || replacingEmptyCache {
             cachedSnapshots = snapshots
         }
     }
