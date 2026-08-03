@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 
 /// The deliberately small state machine behind the app: the divider hides native items while
 /// the panel shows their captured appearance.
@@ -49,7 +50,6 @@ final class MenuBarController: NSObject {
     private let triggerItem: NSStatusItem
     private let snapshotter = StatusItemSnapshotter()
     private let panel = HiddenItemsPanel()
-    private lazy var contextMenu = makeContextMenu()
     private var cachedSnapshots: [StatusItemSnapshot] = []
     private var outsideClickMonitor: Any?
     private var temporaryActivationTask: Task<Void, Never>?
@@ -109,7 +109,9 @@ final class MenuBarController: NSObject {
 
     @objc private func toggle() {
         if NSApp.currentEvent?.type == .rightMouseUp {
-            contextMenu.popUp(positioning: nil, at: .zero, in: triggerItem.button)
+            // Build the menu just before it opens so both the icon selection and login-item
+            // status always reflect the current system state.
+            makeContextMenu().popUp(positioning: nil, at: .zero, in: triggerItem.button)
             return
         }
 
@@ -148,6 +150,23 @@ final class MenuBarController: NSObject {
         iconMenuItem.submenu = icons
         menu.addItem(iconMenuItem)
 
+        let launchAtLogin = NSMenuItem(
+            title: "开机时启动 TopShelfLite",
+            action: #selector(toggleLaunchAtLogin),
+            keyEquivalent: ""
+        )
+        launchAtLogin.target = self
+        switch SMAppService.mainApp.status {
+        case .enabled:
+            launchAtLogin.state = .on
+        case .requiresApproval:
+            launchAtLogin.state = .mixed
+            launchAtLogin.toolTip = "已请求开机启动，请在系统设置中确认"
+        default:
+            launchAtLogin.state = .off
+        }
+        menu.addItem(launchAtLogin)
+
         let systemSettings = NSMenuItem(title: "打开系统设置：控制中心", action: #selector(openMenuBarSettings), keyEquivalent: "")
         systemSettings.target = self
         menu.addItem(systemSettings)
@@ -178,6 +197,20 @@ final class MenuBarController: NSObject {
     @objc private func openMenuBarSettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.ControlCenter-Settings.extension") else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        do {
+            if SMAppService.mainApp.status == .enabled {
+                try SMAppService.mainApp.unregister()
+            } else {
+                try SMAppService.mainApp.register()
+            }
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.messageText = "无法更新开机启动设置"
+            alert.runModal()
+        }
     }
 
     @objc private func selectIcon(_ sender: NSMenuItem) {
