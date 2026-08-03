@@ -52,6 +52,7 @@ final class MenuBarController: NSObject {
     private lazy var contextMenu = makeContextMenu()
     private var cachedSnapshots: [StatusItemSnapshot] = []
     private var outsideClickMonitor: Any?
+    private var temporaryActivationTask: Task<Void, Never>?
     private var iconChoice: IconChoice {
         get { IconChoice(rawValue: UserDefaults.standard.string(forKey: "TopShelfLite.IconChoice") ?? "") ?? .grid }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "TopShelfLite.IconChoice") }
@@ -85,6 +86,7 @@ final class MenuBarController: NSObject {
     }
 
     func stop() {
+        temporaryActivationTask?.cancel()
         NSStatusBar.system.removeStatusItem(triggerItem)
         NSStatusBar.system.removeStatusItem(dividerItem)
     }
@@ -185,6 +187,8 @@ final class MenuBarController: NSObject {
     }
 
     private func hideNativeItems() {
+        temporaryActivationTask?.cancel()
+        temporaryActivationTask = nil
         panel.close()
         stopOutsideClickMonitor()
         // Ice uses the same approach: a transparent, wide status item moves the items after it
@@ -247,16 +251,34 @@ final class MenuBarController: NSObject {
     }
 
     private func activateNativeItem(_ windowID: CGWindowID) {
-        // The original item must briefly return to the menu bar before macOS can deliver a click.
-        dividerItem.length = 1
+        // Do not expand the complete hidden section. Move only the selected real item across
+        // the divider, click it in-place, then move it back after its native interface closes.
+        guard let dividerWindow = dividerItem.button?.window else {
+            hideNativeItems()
+            return
+        }
+
+        temporaryActivationTask?.cancel()
         state = .shown
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(120)) { [weak self] in
+        let dividerWindowID = CGWindowID(dividerWindow.windowNumber)
+        temporaryActivationTask = Task { [weak self, snapshotter] in
             guard let self else { return }
-            _ = self.snapshotter.click(windowID: windowID, promptingForAccessibility: true)
-            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self] in
-                self?.hideNativeItems()
+            guard let context = await snapshotter.temporarilyShowAndClick(
+                windowID: windowID,
+                toRightOf: dividerWindowID,
+                promptingForAccessibility: true
+            ) else {
+                guard !Task.isCancelled else { return }
+                self.hideNativeItems()
+                return
             }
+
+            await snapshotter.waitForTemporaryInterfaceToClose(context)
+            guard !Task.isCancelled else { return }
+            _ = await snapshotter.rehideTemporaryItem(context)
+            guard !Task.isCancelled else { return }
+            self.hideNativeItems()
         }
     }
 }
