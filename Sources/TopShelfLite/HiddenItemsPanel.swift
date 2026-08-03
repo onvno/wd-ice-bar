@@ -45,7 +45,7 @@ final class HiddenItemsPanel: NSPanel {
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.spacing = 3
-        stack.edgeInsets = NSEdgeInsets(top: 5, left: 8, bottom: 5, right: 8)
+        stack.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
         stack.translatesAutoresizingMaskIntoConstraints = false
         effect.addSubview(stack)
 
@@ -116,7 +116,7 @@ final class HiddenItemsPanel: NSPanel {
         let menuBarHeight = NSStatusBar.system.thickness
         let origin = CGPoint(
             x: max(screen.visibleFrame.minX + 8, screen.visibleFrame.maxX - size.width - 8),
-            y: screen.frame.maxY - menuBarHeight - size.height - 4
+            y: screen.frame.maxY - menuBarHeight - size.height - 8
         )
         setFrame(CGRect(origin: origin, size: size), display: true)
     }
