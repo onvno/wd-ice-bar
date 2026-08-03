@@ -23,7 +23,7 @@ final class StatusItemSnapshotter {
                 // owner PID is not this app. Exclude our own two items by both possible signals.
                 guard window.ownerPID != ownPID,
                       !excludingTitles.contains(window.title),
-                      !isSystemControlItem(window)
+                      !["Control Center", "SystemUIServer", "Window Server"].contains(window.ownerName)
                 else {
                     return false
                 }
@@ -164,13 +164,6 @@ final class StatusItemSnapshotter {
             return nil
         }
         return CGRect(dictionaryRepresentation: bounds)
-    }
-
-    private func isSystemControlItem(_ window: StatusWindow) -> Bool {
-        guard window.ownerName == "Control Center" || window.ownerName == "SystemUIServer" else {
-            return window.ownerName == "Window Server"
-        }
-        return ["Clock", "BentoBox", "Siri", "AudioVideoModule", "FaceTime", "MusicRecognition"].contains(window.title)
     }
 
     private func accessibilityIsTrusted(prompting: Bool) -> Bool {
