@@ -135,12 +135,15 @@ final class StatusItemSnapshotter {
         else {
             return false
         }
-        return await commandDrag(
+        guard await commandDrag(
             windowID: context.itemWindowID,
             from: itemFrame,
             to: CGPoint(x: dividerFrame.minX, y: dividerFrame.midY),
             targeting: context.dividerWindowID
-        )
+        ) else {
+            return false
+        }
+        return await waitForPosition(of: context.itemWindowID, leftOf: context.dividerWindowID)
     }
 
     /// Sends the same click a user would to a real, visible status item. macOS requires
@@ -252,6 +255,21 @@ final class StatusItemSnapshotter {
                 let itemFrame = windowFrame(for: windowID),
                 let dividerFrame = windowFrame(for: dividerWindowID),
                 itemFrame.minX >= dividerFrame.maxX - 1
+            {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        return false
+    }
+
+    private func waitForPosition(of windowID: CGWindowID, leftOf dividerWindowID: CGWindowID) async -> Bool {
+        for _ in 0..<20 {
+            guard !Task.isCancelled else { return false }
+            if
+                let itemFrame = windowFrame(for: windowID),
+                let dividerFrame = windowFrame(for: dividerWindowID),
+                itemFrame.maxX <= dividerFrame.minX + 1
             {
                 return true
             }

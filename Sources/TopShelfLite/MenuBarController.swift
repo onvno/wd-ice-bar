@@ -308,6 +308,9 @@ final class MenuBarController: NSObject {
 
             await snapshotter.waitForTemporaryInterfaceToClose(context)
             guard !Task.isCancelled else { return }
+            // A 10,000pt divider places its left edge outside the display. Shrink it only
+            // while returning this one item so macOS receives a valid ⌘-drag destination.
+            dividerItem.length = 16
             _ = await snapshotter.rehideTemporaryItem(context)
             guard !Task.isCancelled else { return }
             self.hideNativeItems()
