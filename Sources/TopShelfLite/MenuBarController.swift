@@ -165,20 +165,18 @@ final class MenuBarController: NSObject {
         dividerItem.length = 1
         let visible = snapshots.prefix(visibleCount)
         let hidden = snapshots.dropFirst(visibleCount)
-        Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(100))
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100)) { [weak self] in
             guard let self else { return }
             for snapshot in visible.reversed() {
                 _ = self.snapshotter.move(windowID: snapshot.id, nextTo: CGWindowID(dividerID), placingRight: true)
-                try? await Task.sleep(for: .milliseconds(110))
             }
             for snapshot in hidden {
                 _ = self.snapshotter.move(windowID: snapshot.id, nextTo: CGWindowID(dividerID), placingRight: false)
-                try? await Task.sleep(for: .milliseconds(110))
             }
-            try? await Task.sleep(for: .milliseconds(180))
-            self.refreshSnapshotCache()
-            self.hideNativeItems()
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(350)) { [weak self] in
+                self?.refreshSnapshotCache()
+                self?.hideNativeItems()
+            }
         }
     }
 
