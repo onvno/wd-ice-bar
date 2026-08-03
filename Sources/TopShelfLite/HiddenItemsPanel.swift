@@ -30,6 +30,30 @@ final class HiddenItemsPanel: NSPanel {
         orderFrontRegardless()
     }
 
+    func showArrangement(
+        snapshots: [StatusItemSnapshot],
+        pinnedCount: Int,
+        onChange: @escaping ([StatusItemSnapshot], Int) -> Void,
+        onClose: @escaping () -> Void
+    ) {
+        closeHandler = onClose
+        activateHandler = nil
+        let effect = makeEffectView()
+        effect.layer?.cornerRadius = 10
+        let editor = ArrangementEditorView(snapshots: snapshots, pinnedCount: pinnedCount, onChange: onChange)
+        editor.translatesAutoresizingMaskIntoConstraints = false
+        effect.addSubview(editor)
+        NSLayoutConstraint.activate([
+            editor.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
+            editor.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
+            editor.topAnchor.constraint(equalTo: effect.topAnchor),
+            editor.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
+        ])
+        contentView = effect
+        positionAtRightEdge()
+        orderFrontRegardless()
+    }
+
     override func close() {
         let handler = closeHandler
         closeHandler = nil

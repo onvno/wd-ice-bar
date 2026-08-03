@@ -107,14 +107,20 @@ final class MenuBarController: NSObject {
 
     @objc private func enterArrangementMode() {
         panel.close()
-        // A visible, narrow divider gives the user a stable landmark. While this mode is on,
-        // macOS's standard ⌘-drag can move a status item to either side of it.
-        dividerItem.length = 16
-        dividerItem.button?.image = NSImage(systemSymbolName: "line.3.horizontal", accessibilityDescription: "Hidden item boundary")
-        dividerItem.button?.image?.isTemplate = true
-        dividerItem.button?.isEnabled = true
-        triggerItem.button?.toolTip = "调整中：按住 ⌘ 拖动图标；点击后按当前顺序隐藏"
         state = .arranging
+        dividerItem.length = 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(120)) { [weak self] in
+            guard let self else { return }
+            self.refreshSnapshotCache(includeVisibleItems: true)
+            self.panel.showArrangement(
+                snapshots: self.cachedSnapshots,
+                pinnedCount: 0,
+                onChange: { [weak self] snapshots, visibleCount in
+                    self?.applyArrangement(snapshots, visibleCount: visibleCount)
+                },
+                onClose: { [weak self] in self?.hideNativeItems() }
+            )
+        }
     }
 
     @objc private func hideNativeItemsFromMenu() {
@@ -143,14 +149,34 @@ final class MenuBarController: NSObject {
         state = .shown
     }
 
-    private func refreshSnapshotCache() {
+    private func refreshSnapshotCache(includeVisibleItems: Bool = false) {
         let snapshots = snapshotter.capture(
             excluding: getpid(),
             excludingTitles: [ItemName.divider, ItemName.trigger],
-            maximumX: dividerItem.button?.window?.frame.maxX
+            maximumX: includeVisibleItems ? nil : dividerItem.button?.window?.frame.maxX
         )
         if !snapshots.isEmpty {
             cachedSnapshots = snapshots
+        }
+    }
+
+    private func applyArrangement(_ snapshots: [StatusItemSnapshot], visibleCount: Int) {
+        guard let dividerID = dividerItem.button?.window?.windowNumber else { return }
+        dividerItem.length = 1
+        let visible = snapshots.prefix(visibleCount)
+        let hidden = snapshots.dropFirst(visibleCount)
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100)) { [weak self] in
+            guard let self else { return }
+            for snapshot in visible.reversed() {
+                _ = self.snapshotter.move(windowID: snapshot.id, nextTo: CGWindowID(dividerID), placingRight: true)
+            }
+            for snapshot in hidden {
+                _ = self.snapshotter.move(windowID: snapshot.id, nextTo: CGWindowID(dividerID), placingRight: false)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(350)) { [weak self] in
+                self?.refreshSnapshotCache()
+                self?.hideNativeItems()
+            }
         }
     }
 
