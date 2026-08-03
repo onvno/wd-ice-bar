@@ -145,6 +145,10 @@ final class MenuBarController: NSObject {
         iconMenuItem.submenu = icons
         menu.addItem(iconMenuItem)
 
+        let systemSettings = NSMenuItem(title: "打开系统设置：控制中心", action: #selector(openMenuBarSettings), keyEquivalent: "")
+        systemSettings.target = self
+        menu.addItem(systemSettings)
+
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "退出 TopShelfLite", action: #selector(quitApplication), keyEquivalent: "q")
         quit.target = self
@@ -166,6 +170,11 @@ final class MenuBarController: NSObject {
 
     @objc private func quitApplication() {
         NSApp.terminate(nil)
+    }
+
+    @objc private func openMenuBarSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.ControlCenter-Settings.extension") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     @objc private func selectIcon(_ sender: NSMenuItem) {
