@@ -54,13 +54,6 @@ final class StatusItemSnapshotter {
             }
     }
 
-    /// NSStatusBarWindow's AppKit window number is not always a usable CGWindowID (it can be
-    /// negative on newer macOS releases). Resolve the actual WindowServer ID from the same list
-    /// used for snapshots instead.
-    func statusItemWindowID(titled title: String) -> CGWindowID? {
-        statusItemWindows().first { $0.title == title }?.id
-    }
-
     /// Temporarily moves just one hidden item to the visible side of the divider, then clicks
     /// that real status item. This mirrors Ice's interaction: the app's own menu is anchored to
     /// the real menu-bar item instead of to our copied image.
