@@ -4,6 +4,36 @@ import AppKit
 /// the panel shows their captured appearance.
 @MainActor
 final class MenuBarController: NSObject {
+    private enum IconChoice: String, CaseIterable {
+        case grid, arrow, chevron, door, dot, ellipsis, iceCube, sunglasses
+
+        var title: String {
+            switch self {
+            case .grid: "Grid"
+            case .arrow: "Arrow"
+            case .chevron: "Chevron"
+            case .door: "Door"
+            case .dot: "Dot"
+            case .ellipsis: "Ellipsis"
+            case .iceCube: "Ice Cube"
+            case .sunglasses: "Sunglasses"
+            }
+        }
+
+        func symbolName(isHidden: Bool) -> String {
+            switch self {
+            case .grid: "rectangle.3.group.fill"
+            case .arrow: isHidden ? "arrowshape.left.fill" : "arrowshape.right.fill"
+            case .chevron: isHidden ? "chevron.left" : "chevron.right"
+            case .door: isHidden ? "door.left.hand.closed" : "door.left.hand.open"
+            case .dot: isHidden ? "circle.fill" : "circle"
+            case .ellipsis: isHidden ? "ellipsis.circle.fill" : "ellipsis.circle"
+            case .iceCube: isHidden ? "snowflake" : "cube"
+            case .sunglasses: isHidden ? "sunglasses.fill" : "sunglasses"
+            }
+        }
+    }
+
     private enum ItemName {
         static let trigger = "TopShelfLite.Toggle.v3"
         static let divider = "TopShelfLite.Divider.v3"
@@ -21,6 +51,10 @@ final class MenuBarController: NSObject {
     private let panel = HiddenItemsPanel()
     private lazy var contextMenu = makeContextMenu()
     private var cachedSnapshots: [StatusItemSnapshot] = []
+    private var iconChoice: IconChoice {
+        get { IconChoice(rawValue: UserDefaults.standard.string(forKey: "TopShelfLite.IconChoice") ?? "") ?? .grid }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "TopShelfLite.IconChoice") }
+    }
 
     private var state: State = .shown
 
@@ -57,8 +91,7 @@ final class MenuBarController: NSObject {
     private func configureTrigger() {
         triggerItem.autosaveName = ItemName.trigger
         guard let button = triggerItem.button else { return }
-        button.image = NSImage(systemSymbolName: "rectangle.3.group.fill", accessibilityDescription: "Show hidden menu bar items")
-        button.image?.isTemplate = true
+        updateTriggerIcon(isHidden: true)
         button.toolTip = "Show hidden menu bar items"
         button.target = self
         button.action = #selector(toggle)
@@ -103,6 +136,19 @@ final class MenuBarController: NSObject {
         hide.target = self
         menu.addItem(hide)
 
+        let icons = NSMenu(title: "更换图标")
+        for choice in IconChoice.allCases {
+            let item = NSMenuItem(title: choice.title, action: #selector(selectIcon), keyEquivalent: "")
+            item.target = self
+            item.representedObject = choice.rawValue
+            item.state = choice == iconChoice ? .on : .off
+            item.image = NSImage(systemSymbolName: choice.symbolName(isHidden: true), accessibilityDescription: choice.title)
+            icons.addItem(item)
+        }
+        let iconMenuItem = NSMenuItem(title: "更换图标", action: nil, keyEquivalent: "")
+        iconMenuItem.submenu = icons
+        menu.addItem(iconMenuItem)
+
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "退出 TopShelfLite", action: #selector(quitApplication), keyEquivalent: "q")
         quit.target = self
@@ -131,6 +177,12 @@ final class MenuBarController: NSObject {
         NSApp.terminate(nil)
     }
 
+    @objc private func selectIcon(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String, let choice = IconChoice(rawValue: rawValue) else { return }
+        iconChoice = choice
+        updateTriggerIcon(isHidden: state == .hidden)
+    }
+
     private func hideNativeItems() {
         panel.close()
         // Ice uses the same approach: a transparent, wide status item moves the items after it
@@ -140,6 +192,7 @@ final class MenuBarController: NSObject {
         dividerItem.button?.isEnabled = false
         dividerItem.length = 10_000
         triggerItem.button?.toolTip = "显示隐藏的菜单栏图标（右键可调整）"
+        updateTriggerIcon(isHidden: true)
         state = .hidden
     }
 
@@ -150,6 +203,16 @@ final class MenuBarController: NSObject {
             onActivate: { [weak self] windowID in self?.activateNativeItem(windowID) }
         )
         state = .shown
+        updateTriggerIcon(isHidden: false)
+    }
+
+    private func updateTriggerIcon(isHidden: Bool) {
+        guard let button = triggerItem.button else { return }
+        button.image = NSImage(
+            systemSymbolName: iconChoice.symbolName(isHidden: isHidden),
+            accessibilityDescription: "Show hidden menu bar items"
+        )
+        button.image?.isTemplate = true
     }
 
     private func refreshSnapshotCache() {
