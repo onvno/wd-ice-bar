@@ -4,7 +4,6 @@ import CoreGraphics
 
 struct StatusItemSnapshot: Identifiable {
     let id: CGWindowID
-    let key: String
     let image: NSImage
     let label: String
 }
@@ -21,17 +20,13 @@ final class StatusItemSnapshotter {
             .filter { window in
                 // NSStatusItem windows are hosted by Control Center on modern macOS, so their
                 // owner PID is not this app. Exclude our own two items by both possible signals.
-                guard window.ownerPID != ownPID,
-                      !excludingTitles.contains(window.title),
-                      !["Control Center", "SystemUIServer", "Window Server"].contains(window.ownerName)
-                else {
+                guard window.ownerPID != ownPID, !excludingTitles.contains(window.title) else {
                     return false
                 }
 
                 guard let maximumX else { return true }
                 return window.frame.maxX <= maximumX
             }
-            .sorted { $0.frame.minX < $1.frame.minX }
             .compactMap { window in
                 guard let image = CGWindowListCreateImage(
                     .null,
@@ -45,7 +40,6 @@ final class StatusItemSnapshotter {
                 let size = CGSize(width: image.width / 2, height: image.height / 2)
                 return StatusItemSnapshot(
                     id: window.id,
-                    key: "\(window.ownerName)|\(window.title)",
                     image: NSImage(cgImage: image, size: size),
                     label: window.title.isEmpty ? window.ownerName : window.title
                 )
@@ -77,31 +71,6 @@ final class StatusItemSnapshotter {
             mouseCursorPosition: point,
             mouseButton: .left
         )?.post(tap: .cghidEventTap)
-        return true
-    }
-
-    @discardableResult
-    func move(windowID: CGWindowID, nextTo targetID: CGWindowID, placingRight: Bool) -> Bool {
-        guard accessibilityIsTrusted(prompting: true),
-              let sourceFrame = windowFrame(for: windowID),
-              let targetFrame = windowFrame(for: targetID),
-              let source = CGEventSource(stateID: .hidSystemState)
-        else { return false }
-
-        let start = CGPoint(x: sourceFrame.midX, y: sourceFrame.midY)
-        let end = CGPoint(x: placingRight ? targetFrame.maxX : targetFrame.minX, y: targetFrame.midY)
-        let flags: CGEventFlags = .maskCommand
-        CGEvent(keyboardEventSource: source, virtualKey: 0x37, keyDown: true)?.post(tap: .cghidEventTap)
-        CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: start, mouseButton: .left)?.post(tap: .cghidEventTap)
-        if let drag = CGEvent(mouseEventSource: source, mouseType: .leftMouseDragged, mouseCursorPosition: end, mouseButton: .left) {
-            drag.flags = flags
-            drag.post(tap: .cghidEventTap)
-        }
-        if let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: end, mouseButton: .left) {
-            up.flags = flags
-            up.post(tap: .cghidEventTap)
-        }
-        CGEvent(keyboardEventSource: source, virtualKey: 0x37, keyDown: false)?.post(tap: .cghidEventTap)
         return true
     }
 
