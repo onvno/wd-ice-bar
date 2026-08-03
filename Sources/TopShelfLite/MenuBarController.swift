@@ -132,10 +132,6 @@ final class MenuBarController: NSObject {
         arrange.target = self
         menu.addItem(arrange)
 
-        let hide = NSMenuItem(title: "按当前顺序隐藏图标", action: #selector(hideNativeItemsFromMenu), keyEquivalent: "")
-        hide.target = self
-        menu.addItem(hide)
-
         let icons = NSMenu(title: "更换图标")
         for choice in IconChoice.allCases {
             let item = NSMenuItem(title: choice.title, action: #selector(selectIcon), keyEquivalent: "")
@@ -166,11 +162,6 @@ final class MenuBarController: NSObject {
         dividerItem.button?.isEnabled = true
         triggerItem.button?.toolTip = "调整中：按住 ⌘ 拖动图标；点击后按当前顺序隐藏"
         state = .arranging
-    }
-
-    @objc private func hideNativeItemsFromMenu() {
-        refreshSnapshotCache()
-        hideNativeItems()
     }
 
     @objc private func quitApplication() {

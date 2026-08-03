@@ -45,7 +45,7 @@ final class HiddenItemsPanel: NSPanel {
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.spacing = 3
-        stack.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
+        stack.edgeInsets = NSEdgeInsets(top: 5, left: 8, bottom: 5, right: 8)
         stack.translatesAutoresizingMaskIntoConstraints = false
         effect.addSubview(stack)
 
