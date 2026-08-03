@@ -30,34 +30,6 @@ final class HiddenItemsPanel: NSPanel {
         orderFrontRegardless()
     }
 
-    func showArrangement(
-        snapshots: [StatusItemSnapshot],
-        pinnedCount: Int,
-        onPinnedCountChange: @escaping (Int) -> Void,
-        onClose: @escaping () -> Void
-    ) {
-        closeHandler = onClose
-        activateHandler = nil
-
-        let effect = makeEffectView(cornerRadius: 9)
-        let editor = ArrangementEditorView(
-            snapshots: snapshots,
-            pinnedCount: pinnedCount,
-            onChange: onPinnedCountChange
-        )
-        editor.translatesAutoresizingMaskIntoConstraints = false
-        effect.addSubview(editor)
-        NSLayoutConstraint.activate([
-            editor.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
-            editor.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
-            editor.topAnchor.constraint(equalTo: effect.topAnchor),
-            editor.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
-        ])
-        contentView = effect
-        positionAtRightEdge()
-        orderFrontRegardless()
-    }
-
     override func close() {
         let handler = closeHandler
         closeHandler = nil
@@ -67,7 +39,7 @@ final class HiddenItemsPanel: NSPanel {
     }
 
     private func makeContent(snapshots: [StatusItemSnapshot]) -> NSView {
-        let effect = makeEffectView(cornerRadius: 11)
+        let effect = makeEffectView()
 
         let stack = NSStackView()
         stack.orientation = .horizontal
@@ -123,7 +95,7 @@ final class HiddenItemsPanel: NSPanel {
         close()
     }
 
-    private func makeEffectView(cornerRadius: CGFloat) -> NSVisualEffectView {
+    private func makeEffectView() -> NSVisualEffectView {
         let effect = NSVisualEffectView()
         effect.material = .popover
         effect.blendingMode = .withinWindow
@@ -133,7 +105,7 @@ final class HiddenItemsPanel: NSPanel {
         effect.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.84).cgColor
         effect.layer?.borderColor = NSColor.white.withAlphaComponent(0.16).cgColor
         effect.layer?.borderWidth = 1
-        effect.layer?.cornerRadius = cornerRadius
+        effect.layer?.cornerRadius = 11
         effect.layer?.masksToBounds = true
         return effect
     }
