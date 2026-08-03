@@ -102,6 +102,11 @@ final class MenuBarController: NSObject {
         let hide = NSMenuItem(title: "按当前顺序隐藏图标", action: #selector(hideNativeItemsFromMenu), keyEquivalent: "")
         hide.target = self
         menu.addItem(hide)
+
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: "退出 TopShelfLite", action: #selector(quitApplication), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
         return menu
     }
 
@@ -120,6 +125,10 @@ final class MenuBarController: NSObject {
     @objc private func hideNativeItemsFromMenu() {
         refreshSnapshotCache()
         hideNativeItems()
+    }
+
+    @objc private func quitApplication() {
+        NSApp.terminate(nil)
     }
 
     private func hideNativeItems() {
