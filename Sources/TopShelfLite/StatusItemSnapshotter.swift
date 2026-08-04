@@ -4,12 +4,16 @@ import CoreGraphics
 
 struct StatusItemSnapshot: Identifiable {
     let id: CGWindowID
+    /// Best-effort identity for the current menu-bar session. `windowID` is the authoritative
+    /// key while the item exists; this value helps preserve an editor selection after a refresh.
+    let key: String
     let image: NSImage
     let label: String
 }
 
 /// Reads status-item windows through the same WindowServer API Ice uses. This is intentionally
 /// isolated so macOS-specific compatibility work stays out of the UI and menu-bar control code.
+@MainActor
 final class StatusItemSnapshotter {
     func capture(
         excluding ownPID: pid_t,
@@ -24,9 +28,12 @@ final class StatusItemSnapshotter {
                     return false
                 }
 
+                guard isUserMenuBarItem(window) else { return false }
+
                 guard let maximumX else { return true }
                 return window.frame.maxX <= maximumX
             }
+            .sorted { $0.frame.minX < $1.frame.minX }
             .compactMap { window in
                 guard let image = CGWindowListCreateImage(
                     .null,
@@ -40,10 +47,65 @@ final class StatusItemSnapshotter {
                 let size = CGSize(width: image.width / 2, height: image.height / 2)
                 return StatusItemSnapshot(
                     id: window.id,
+                    key: "\(window.ownerPID)|\(window.ownerName)|\(window.title)",
                     image: NSImage(cgImage: image, size: size),
                     label: window.title.isEmpty ? window.ownerName : window.title
                 )
             }
+    }
+
+    /// Captures every third-party candidate, including items currently outside the visible menu
+    /// bar. This is used only by the experimental layout editor.
+    func captureAllCandidates(excluding ownPID: pid_t, excludingTitles: Set<String>) -> [StatusItemSnapshot] {
+        capture(excluding: ownPID, excludingTitles: excludingTitles, maximumX: nil)
+    }
+
+    /// Moves a real status item immediately beside another real item. It is deliberately
+    /// transactional: return `false` unless WindowServer confirms the expected adjacency.
+    @discardableResult
+    func move(windowID: CGWindowID, beside targetID: CGWindowID, onRight: Bool) async -> Bool {
+        guard accessibilityIsTrusted(prompting: true) else { return false }
+
+        for _ in 0..<3 {
+            guard
+                let item = statusWindow(for: windowID),
+                let target = statusWindow(for: targetID),
+                let source = CGEventSource(stateID: .hidSystemState)
+            else {
+                return false
+            }
+
+            source.setLocalEventsFilterDuringSuppressionState(.permitAllEvents, state: .eventSuppressionStateRemoteMouseDrag)
+            source.setLocalEventsFilterDuringSuppressionState(.permitAllEvents, state: .eventSuppressionStateSuppressionInterval)
+            source.localEventsSuppressionInterval = 0
+
+            let destination = CGPoint(
+                x: onRight ? target.frame.maxX : target.frame.minX,
+                y: target.frame.midY
+            )
+            guard postCommandDrag(item: item, target: target, destination: destination, source: source) else {
+                return false
+            }
+
+            if await waitForAdjacency(of: windowID, beside: targetID, onRight: onRight) {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(80))
+        }
+        return false
+    }
+
+    /// Finds the actual WindowServer ID of one of TopShelfLite's own control items. AppKit's
+    /// `windowNumber` can be negative and must not be converted directly to `CGWindowID`.
+    func statusItemWindowID(titled title: String) -> CGWindowID? {
+        statusItemWindows().first { $0.title == title }?.id
+    }
+
+    func isWindow(_ windowID: CGWindowID, toRightOf dividerID: CGWindowID) -> Bool? {
+        guard let itemFrame = windowFrame(for: windowID), let dividerFrame = windowFrame(for: dividerID) else {
+            return nil
+        }
+        return itemFrame.minX >= dividerFrame.maxX - 1
     }
 
     /// Reveals an original status item briefly, then sends it the same left click a user would.
@@ -104,6 +166,96 @@ final class StatusItemSnapshotter {
         }
     }
 
+    private func statusWindow(for windowID: CGWindowID) -> StatusWindow? {
+        statusItemWindows().first { $0.id == windowID }
+    }
+
+    private func postCommandDrag(
+        item: StatusWindow,
+        target: StatusWindow,
+        destination: CGPoint,
+        source: CGEventSource
+    ) -> Bool {
+        guard
+            let mouseDown = menuBarEvent(
+                type: .leftMouseDown,
+                location: CGPoint(x: 20_000, y: 20_000),
+                targetWindowID: item.id,
+                ownerPID: item.ownerPID,
+                source: source,
+                flags: .maskCommand
+            ),
+            let mouseUp = menuBarEvent(
+                type: .leftMouseUp,
+                location: destination,
+                targetWindowID: target.id,
+                ownerPID: item.ownerPID,
+                source: source,
+                flags: []
+            )
+        else {
+            return false
+        }
+
+        // Status-bar moves are interpreted by the session event stream, not by a normal
+        // AppKit dragging session. These fields mirror the real source/target windows.
+        mouseDown.post(tap: .cgSessionEventTap)
+        mouseUp.post(tap: .cgSessionEventTap)
+        return true
+    }
+
+    private func menuBarEvent(
+        type: CGEventType,
+        location: CGPoint,
+        targetWindowID: CGWindowID,
+        ownerPID: pid_t,
+        source: CGEventSource,
+        flags: CGEventFlags
+    ) -> CGEvent? {
+        guard let event = CGEvent(
+            mouseEventSource: source,
+            mouseType: type,
+            mouseCursorPosition: location,
+            mouseButton: .left
+        ) else {
+            return nil
+        }
+        event.flags = flags
+        event.setIntegerValueField(.eventTargetUnixProcessID, value: Int64(ownerPID))
+        event.setIntegerValueField(.eventSourceUserData, value: Int64(truncatingIfNeeded: Int(bitPattern: ObjectIdentifier(event))))
+        event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(targetWindowID))
+        event.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(targetWindowID))
+        event.setIntegerValueField(CGEventField(rawValue: 0x33)!, value: Int64(targetWindowID))
+        return event
+    }
+
+    private func waitForAdjacency(of windowID: CGWindowID, beside targetID: CGWindowID, onRight: Bool) async -> Bool {
+        for _ in 0..<30 {
+            guard !Task.isCancelled else { return false }
+            if
+                let itemFrame = windowFrame(for: windowID),
+                let targetFrame = windowFrame(for: targetID)
+            {
+                let edge = onRight ? itemFrame.minX - targetFrame.maxX : targetFrame.minX - itemFrame.maxX
+                if abs(edge) <= 2 {
+                    return true
+                }
+            }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        return false
+    }
+
+    /// System-owned controls are neither reliably movable nor part of TopShelfLite's scope.
+    /// Filtering them before the editor is important: otherwise the date and Control Center can
+    /// accidentally be treated as ordinary app icons.
+    private func isUserMenuBarItem(_ window: StatusWindow) -> Bool {
+        let systemOwners: Set<String> = ["Control Center", "SystemUIServer", "Window Server"]
+        guard !systemOwners.contains(window.ownerName) else { return false }
+        let reservedTitles: Set<String> = ["Clock", "BentoBox", "Siri", "AudioVideoModule", "FaceTime", "MusicRecognition"]
+        return !reservedTitles.contains(window.title)
+    }
+
     private func privateMenuBarWindowIDs() -> [CGWindowID] {
         var count: Int32 = 0
         guard CGSGetWindowCount(CGSMainConnectionID(), 0, &count) == .success, count > 0 else {
@@ -142,6 +294,14 @@ final class StatusItemSnapshotter {
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         return AXIsProcessTrustedWithOptions(options)
     }
+}
+
+private extension CGEventFilterMask {
+    static let permitAllEvents: CGEventFilterMask = [
+        .permitLocalMouseEvents,
+        .permitLocalKeyboardEvents,
+        .permitSystemDefinedEvents,
+    ]
 }
 
 private struct StatusWindow {

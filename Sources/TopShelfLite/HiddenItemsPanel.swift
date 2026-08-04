@@ -33,6 +33,41 @@ final class HiddenItemsPanel: NSPanel {
         animateAlpha(to: 1)
     }
 
+    func showArrangement(
+        snapshots: [StatusItemSnapshot],
+        visibleCount: Int,
+        onCommit: @escaping ([StatusItemSnapshot], Int) -> Void,
+        onClose: @escaping () -> Void
+    ) {
+        closeHandler = onClose
+        activateHandler = nil
+
+        let effect = makeEffectView()
+        let editor = ArrangementEditorView(snapshots: snapshots, visibleCount: visibleCount, onCommit: onCommit)
+        editor.translatesAutoresizingMaskIntoConstraints = false
+        effect.addSubview(editor)
+        NSLayoutConstraint.activate([
+            editor.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
+            editor.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
+            editor.topAnchor.constraint(equalTo: effect.topAnchor),
+            editor.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
+        ])
+        contentView = effect
+        positionAtRightEdge()
+        alphaValue = 0
+        orderFrontRegardless()
+        animateAlpha(to: 1)
+    }
+
+    /// Removes an editor immediately without invoking its close action. Used while a layout
+    /// transaction is in progress; invoking that action would re-hide the native items too soon.
+    func dismissForLayoutTransaction() {
+        closeHandler = nil
+        activateHandler = nil
+        orderOut(nil)
+        alphaValue = 1
+    }
+
     override func close() {
         guard !isDismissing else { return }
         let handler = closeHandler

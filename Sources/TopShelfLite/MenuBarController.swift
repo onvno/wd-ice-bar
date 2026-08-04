@@ -52,6 +52,8 @@ final class MenuBarController: NSObject {
     private let panel = HiddenItemsPanel()
     private var cachedSnapshots: [StatusItemSnapshot] = []
     private var outsideClickMonitor: Any?
+    private var layoutTask: Task<Void, Never>?
+    private var isApplyingLayout = false
     private var iconChoice: IconChoice {
         get { IconChoice(rawValue: UserDefaults.standard.string(forKey: "TopShelfLite.IconChoice") ?? "") ?? .grid }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "TopShelfLite.IconChoice") }
@@ -128,7 +130,7 @@ final class MenuBarController: NSObject {
     private func makeContextMenu() -> NSMenu {
         let menu = NSMenu()
         let arrange = NSMenuItem(
-            title: "调整顶部图标（按住 ⌘ 拖动）",
+            title: "编辑所有菜单栏图标（实验）",
             action: #selector(enterArrangementMode),
             keyEquivalent: ""
         )
@@ -185,15 +187,20 @@ final class MenuBarController: NSObject {
     }
 
     @objc private func enterArrangementMode() {
-        panel.close()
-        // A visible, narrow divider gives the user a stable landmark. While this mode is on,
-        // macOS's standard ⌘-drag can move a status item to either side of it.
+        guard !isApplyingLayout else { return }
+        panel.dismissForLayoutTransaction()
+        // Restore the genuine layout before capturing candidates. Unlike the normal adjustment
+        // mode, the editor can show candidates that are currently beyond the screen edge.
         dividerItem.length = 16
         dividerItem.button?.image = NSImage(systemSymbolName: "line.3.horizontal", accessibilityDescription: "Hidden item boundary")
         dividerItem.button?.image?.isTemplate = true
         dividerItem.button?.isEnabled = true
-        triggerItem.button?.toolTip = "调整中：按住 ⌘ 拖动图标；点击后按当前顺序隐藏"
+        triggerItem.button?.toolTip = "编辑中：在下方栏拖动图标，蓝线左侧显示、右侧隐藏"
         state = .arranging
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(220)) { [weak self] in
+            self?.presentArrangementEditor()
+        }
     }
 
     @objc private func quitApplication() {
@@ -267,6 +274,86 @@ final class MenuBarController: NSObject {
         state = .shown
         updateTriggerIcon(isHidden: false)
         startOutsideClickMonitor()
+    }
+
+    private func presentArrangementEditor() {
+        guard state == .arranging,
+              let dividerID = snapshotter.statusItemWindowID(titled: ItemName.divider)
+        else {
+            hideNativeItems()
+            return
+        }
+
+        let allCandidates = snapshotter.captureAllCandidates(
+            excluding: getpid(),
+            excludingTitles: [ItemName.divider, ItemName.trigger]
+        )
+        guard !allCandidates.isEmpty else {
+            hideNativeItems()
+            return
+        }
+
+        // The editor's visual order is intentionally different from physical order: the user
+        // requested that icons left of the blue marker are visible. Physically those items live
+        // to the divider's right, while the hidden shelf lives on its left.
+        let visible = allCandidates.filter { snapshotter.isWindow($0.id, toRightOf: dividerID) == true }
+        let hidden = allCandidates.filter { snapshotter.isWindow($0.id, toRightOf: dividerID) != true }
+        panel.showArrangement(
+            snapshots: visible + hidden,
+            visibleCount: visible.count,
+            onCommit: { [weak self] snapshots, visibleCount in
+                self?.applyArrangement(snapshots, visibleCount: visibleCount)
+            },
+            onClose: { [weak self] in self?.hideNativeItems() }
+        )
+    }
+
+    private func applyArrangement(_ snapshots: [StatusItemSnapshot], visibleCount: Int) {
+        guard !isApplyingLayout,
+              let dividerID = snapshotter.statusItemWindowID(titled: ItemName.divider)
+        else { return }
+
+        isApplyingLayout = true
+        panel.dismissForLayoutTransaction()
+        let visible = Array(snapshots.prefix(visibleCount))
+        let hidden = Array(snapshots.dropFirst(visibleCount))
+
+        layoutTask?.cancel()
+        layoutTask = Task { [weak self, snapshotter] in
+            var completed = true
+
+            // Inserting each list in reverse retains its left-to-right order next to the same
+            // divider. A proxy drag therefore has the exact visual order chosen in the editor.
+            for snapshot in visible.reversed() {
+                guard !Task.isCancelled else { return }
+                if !(await snapshotter.move(windowID: snapshot.id, beside: dividerID, onRight: true)) {
+                    completed = false
+                    break
+                }
+            }
+            if completed {
+                for snapshot in hidden.reversed() {
+                    guard !Task.isCancelled else { return }
+                    if !(await snapshotter.move(windowID: snapshot.id, beside: dividerID, onRight: false)) {
+                        completed = false
+                        break
+                    }
+                }
+            }
+
+            guard let self, !Task.isCancelled else { return }
+            self.isApplyingLayout = false
+            self.layoutTask = nil
+            self.refreshSnapshotCache()
+            self.hideNativeItems()
+
+            if !completed {
+                let alert = NSAlert()
+                alert.messageText = "部分图标未能移动"
+                alert.informativeText = "macOS 没有接受其中一次自动 ⌘ 拖拽，已停止余下移动。可再次进入编辑模式查看当前顺序并重试。"
+                alert.runModal()
+            }
+        }
     }
 
     private func startOutsideClickMonitor() {
