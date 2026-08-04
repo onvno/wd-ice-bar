@@ -85,18 +85,23 @@ final class StatusItemSnapshotter {
     func move(windowID: CGWindowID, beside targetID: CGWindowID, onRight: Bool) async -> MoveResult {
         guard accessibilityIsTrusted(prompting: true) else { return .accessibilityDenied }
 
+        var lastRoutingFailure: MenuBarEventRouter.Result?
         for _ in 0..<3 {
             guard
                 let item = statusWindow(for: windowID),
                 let target = statusWindow(for: targetID),
-                let source = CGEventSource(stateID: .hidSystemState)
+                let source = CGEventSource(stateID: .hidSystemState),
+                let suppressionSource = CGEventSource(stateID: .combinedSessionState)
             else {
                 return .sourceOrTargetMissing
             }
 
-            source.setLocalEventsFilterDuringSuppressionState(.permitAllEvents, state: .eventSuppressionStateRemoteMouseDrag)
-            source.setLocalEventsFilterDuringSuppressionState(.permitAllEvents, state: .eventSuppressionStateSuppressionInterval)
-            source.localEventsSuppressionInterval = 0
+            // The actual events use the HID source, but macOS applies drag suppression to the
+            // combined session source. Configuring the latter is required for a status item to
+            // transition into its real ⌘-drag state (the same separation Ice uses).
+            suppressionSource.setLocalEventsFilterDuringSuppressionState(.permitAllEvents, state: .eventSuppressionStateRemoteMouseDrag)
+            suppressionSource.setLocalEventsFilterDuringSuppressionState(.permitAllEvents, state: .eventSuppressionStateSuppressionInterval)
+            suppressionSource.localEventsSuppressionInterval = 0
 
             let destination = CGPoint(
                 x: onRight ? target.frame.maxX : target.frame.minX,
@@ -104,7 +109,9 @@ final class StatusItemSnapshotter {
             )
             let routingResult = await postCommandDrag(item: item, target: target, destination: destination, source: source)
             guard routingResult == .delivered else {
-                return .eventRouting(routingResult)
+                lastRoutingFailure = routingResult
+                try? await Task.sleep(for: .milliseconds(80))
+                continue
             }
 
             if await waitForAdjacency(of: windowID, beside: targetID, onRight: onRight) {
@@ -112,7 +119,7 @@ final class StatusItemSnapshotter {
             }
             try? await Task.sleep(for: .milliseconds(80))
         }
-        return .positionNotConfirmed
+        return lastRoutingFailure.map(MoveResult.eventRouting) ?? .positionNotConfirmed
     }
 
     /// Finds the actual WindowServer ID of one of TopShelfLite's own control items. AppKit's
@@ -221,6 +228,23 @@ final class StatusItemSnapshotter {
         // source process. A direct session post is ignored by current macOS status-bar hosts.
         let downResult = await eventRouter.route(mouseDown, to: item.ownerPID)
         guard downResult == .delivered else { return downResult }
+
+        // A menu-bar status item first changes frame when macOS enters the native drag state.
+        // Sending mouse-up immediately afterwards (our old behavior) is commonly ignored. Wait
+        // for that transition before completing the drag, as Ice does.
+        guard await waitForFrameChange(of: item.id, initialFrame: item.frame, timeout: .milliseconds(80)) else {
+            if let cancelEvent = menuBarEvent(
+                type: .leftMouseUp,
+                location: CGPoint(x: item.frame.midX, y: item.frame.midY),
+                targetWindowID: item.id,
+                ownerPID: item.ownerPID,
+                source: source,
+                flags: []
+            ) {
+                _ = await eventRouter.route(cancelEvent, to: item.ownerPID)
+            }
+            return .dragDidNotStart
+        }
         return await eventRouter.route(mouseUp, to: item.ownerPID)
     }
 
@@ -264,6 +288,18 @@ final class StatusItemSnapshotter {
                 }
             }
             try? await Task.sleep(for: .milliseconds(25))
+        }
+        return false
+    }
+
+    private func waitForFrameChange(of windowID: CGWindowID, initialFrame: CGRect, timeout: Duration) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            guard !Task.isCancelled else { return false }
+            if let frame = windowFrame(for: windowID), frame != initialFrame {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(10))
         }
         return false
     }

@@ -10,12 +10,14 @@ final class MenuBarEventRouter {
         case delivered
         case targetTapUnavailable
         case timedOut
+        case dragDidNotStart
 
         var description: String {
             switch self {
             case .delivered: "事件已送达"
             case .targetTapUnavailable: "无法连接目标状态栏进程的事件通道"
             case .timedOut: "事件路由超时"
+            case .dragDidNotStart: "事件已送达，但源图标没有进入拖拽状态"
             }
         }
     }

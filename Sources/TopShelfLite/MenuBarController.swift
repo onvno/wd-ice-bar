@@ -329,6 +329,11 @@ final class MenuBarController: NSObject {
             var completed = true
             var failureDescription: String?
 
+            // The mouse-up that ends the proxy drag can otherwise race the first synthesized
+            // native ⌘ drag. Ice waits until real user input has settled before moving items.
+            try? await Task.sleep(for: .milliseconds(130))
+            guard !Task.isCancelled else { return }
+
             // Inserting each list in reverse retains its left-to-right order next to the same
             // divider. A proxy drag therefore has the exact visual order chosen in the editor.
             for snapshot in visible.reversed() {
