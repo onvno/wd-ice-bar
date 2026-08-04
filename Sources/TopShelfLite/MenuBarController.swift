@@ -206,11 +206,21 @@ final class MenuBarController: NSObject {
     }
 
     @objc private func refreshHiddenItems() {
-        // Unlike a routine refresh, a user-requested refresh must be allowed to replace an old
-        // non-empty cache with an empty result when the hidden apps have all gone away.
-        refreshSnapshotCache(replacingEmptyCache: true)
-        if state == .shown {
-            showPanel()
+        if state == .arranging {
+            // The divider is already narrow, so the native item frames are current.
+            refreshSnapshotCache()
+            return
+        }
+
+        // The wide hiding divider can make the WindowServer report no usable hidden frames.
+        // Restore the native layout first, wait for it to settle, then capture a new cache.
+        // Keeping the old cache on an empty scan avoids erasing usable snapshots on a transient
+        // WindowServer miss.
+        dividerItem.length = 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(180)) { [weak self] in
+            guard let self else { return }
+            self.refreshSnapshotCache()
+            self.hideNativeItems()
         }
     }
 
@@ -285,13 +295,13 @@ final class MenuBarController: NSObject {
         button.image?.isTemplate = true
     }
 
-    private func refreshSnapshotCache(replacingEmptyCache: Bool = false) {
+    private func refreshSnapshotCache() {
         let snapshots = snapshotter.capture(
             excluding: getpid(),
             excludingTitles: [ItemName.divider, ItemName.trigger],
             maximumX: dividerItem.button?.window?.frame.maxX
         )
-        if !snapshots.isEmpty || replacingEmptyCache {
+        if !snapshots.isEmpty {
             cachedSnapshots = snapshots
         }
     }
