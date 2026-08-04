@@ -40,6 +40,8 @@ final class MenuBarController: NSObject {
         static let divider = "TopShelfLite.Divider.v3"
     }
 
+    private static let experimentalBuildLabel = "实验构建：事件通道恢复 r130b308"
+
     private enum State {
         case hidden
         case shown
@@ -129,6 +131,10 @@ final class MenuBarController: NSObject {
 
     private func makeContextMenu() -> NSMenu {
         let menu = NSMenu()
+        let buildLabel = NSMenuItem(title: Self.experimentalBuildLabel, action: nil, keyEquivalent: "")
+        buildLabel.isEnabled = false
+        menu.addItem(buildLabel)
+        menu.addItem(.separator())
         let arrange = NSMenuItem(
             title: "编辑所有菜单栏图标（实验）",
             action: #selector(enterArrangementMode),

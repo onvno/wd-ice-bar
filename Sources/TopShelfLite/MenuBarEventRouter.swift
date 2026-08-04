@@ -10,14 +10,12 @@ final class MenuBarEventRouter {
         case delivered
         case targetTapUnavailable
         case timedOut
-        case tapDisabled
 
         var description: String {
             switch self {
             case .delivered: "事件已送达"
             case .targetTapUnavailable: "无法连接目标状态栏进程的事件通道"
             case .timedOut: "事件路由超时"
-            case .tapDisabled: "macOS 停用了自动拖拽事件通道"
             }
         }
     }
