@@ -140,6 +140,17 @@ private final class RoutedMenuBarEvent: @unchecked Sendable {
         return fields.allSatisfy { received.getIntegerValueField($0) == event.getIntegerValueField($0) }
     }
 
+    /// A system tap is routinely paused when the user releases the proxy drag. This does not
+    /// mean the synthetic menu-bar event was rejected. Ice re-enables such taps and keeps
+    /// waiting for the marker/real event instead of treating this notification as a failure.
+    private func reenableSourceTap() {
+        if let sourcePort { CGEvent.tapEnable(tap: sourcePort, enable: true) }
+    }
+
+    private func reenableSessionTap() {
+        if let sessionPort { CGEvent.tapEnable(tap: sessionPort, enable: true) }
+    }
+
     private func finish(_ result: MenuBarEventRouter.Result) {
         guard !finished else { return }
         finished = true
@@ -168,8 +179,8 @@ private final class RoutedMenuBarEvent: @unchecked Sendable {
         guard let userInfo else { return Unmanaged.passUnretained(event) }
         let routedEvent = Unmanaged<RoutedMenuBarEvent>.fromOpaque(userInfo).takeUnretainedValue()
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            routedEvent.finish(.tapDisabled)
-            return Unmanaged.passUnretained(event)
+            routedEvent.reenableSourceTap()
+            return nil
         }
         return routedEvent.receiveMarker(event)
     }
@@ -178,8 +189,8 @@ private final class RoutedMenuBarEvent: @unchecked Sendable {
         guard let userInfo else { return Unmanaged.passUnretained(event) }
         let routedEvent = Unmanaged<RoutedMenuBarEvent>.fromOpaque(userInfo).takeUnretainedValue()
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            routedEvent.finish(.tapDisabled)
-            return Unmanaged.passUnretained(event)
+            routedEvent.reenableSessionTap()
+            return nil
         }
         return routedEvent.receiveSessionEvent(event)
     }
