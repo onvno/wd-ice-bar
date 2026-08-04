@@ -40,7 +40,7 @@ final class MenuBarController: NSObject {
         static let divider = "TopShelfLite.Divider.v3"
     }
 
-    private static let experimentalBuildLabel = "实验构建：事件通道恢复 r130b308"
+    private static let experimentalBuildLabel = "实验构建：原生拖拽状态等待 r7425b30"
 
     private enum State {
         case hidden
