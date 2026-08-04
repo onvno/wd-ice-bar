@@ -6,6 +6,7 @@ final class ArrangementEditorView: NSView {
     private var snapshots: [StatusItemSnapshot]
     private var visibleCount: Int
     private var draggedIndex: Int?
+    private var isCommitLocked = false
     private let itemWidth: CGFloat = 36
     private let edge: CGFloat = 10
     private let onCommit: ([StatusItemSnapshot], Int) -> Void
@@ -23,6 +24,13 @@ final class ArrangementEditorView: NSView {
     override var intrinsicContentSize: NSSize { frame.size }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+    func setCommitLocked(_ locked: Bool) {
+        isCommitLocked = locked
+        toolTip = locked
+            ? "正在应用到原生菜单栏…"
+            : "拖动图标；蓝线左侧显示在原生菜单栏，右侧隐藏在 TopShelfLite"
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         for (index, snapshot) in snapshots.enumerated() {
             let rect = CGRect(x: edge + CGFloat(index) * itemWidth, y: 6, width: itemWidth, height: 30)
@@ -39,6 +47,7 @@ final class ArrangementEditorView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        guard !isCommitLocked else { return }
         let point = convert(event.locationInWindow, from: nil)
         let index = Int((point.x - edge) / itemWidth)
         guard snapshots.indices.contains(index) else { return }
@@ -47,6 +56,7 @@ final class ArrangementEditorView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        guard !isCommitLocked else { return }
         guard let source = draggedIndex else { return }
         let point = convert(event.locationInWindow, from: nil)
         let wasVisible = source < visibleCount
@@ -69,6 +79,7 @@ final class ArrangementEditorView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        guard !isCommitLocked else { return }
         guard draggedIndex != nil else { return }
         draggedIndex = nil
         NSCursor.pop()

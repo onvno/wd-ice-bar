@@ -3,6 +3,7 @@ import AppKit
 final class HiddenItemsPanel: NSPanel {
     private var closeHandler: (() -> Void)?
     private var activateHandler: ((CGWindowID) -> Void)?
+    private weak var arrangementEditor: ArrangementEditorView?
     private var isDismissing = false
 
     init() {
@@ -44,6 +45,7 @@ final class HiddenItemsPanel: NSPanel {
 
         let effect = makeEffectView()
         let editor = ArrangementEditorView(snapshots: snapshots, visibleCount: visibleCount, onCommit: onCommit)
+        arrangementEditor = editor
         editor.translatesAutoresizingMaskIntoConstraints = false
         effect.addSubview(editor)
         NSLayoutConstraint.activate([
@@ -64,8 +66,13 @@ final class HiddenItemsPanel: NSPanel {
     func dismissForLayoutTransaction() {
         closeHandler = nil
         activateHandler = nil
+        arrangementEditor = nil
         orderOut(nil)
         alphaValue = 1
+    }
+
+    func setArrangementCommitLocked(_ locked: Bool) {
+        arrangementEditor?.setCommitLocked(locked)
     }
 
     override func close() {
@@ -73,6 +80,7 @@ final class HiddenItemsPanel: NSPanel {
         let handler = closeHandler
         closeHandler = nil
         activateHandler = nil
+        arrangementEditor = nil
         guard isVisible else {
             handler?()
             return

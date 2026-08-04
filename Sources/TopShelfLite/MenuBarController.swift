@@ -40,7 +40,7 @@ final class MenuBarController: NSObject {
         static let divider = "TopShelfLite.Divider.v3"
     }
 
-    private static let experimentalBuildLabel = "实验构建：仅移动跨分隔线图标 v3"
+    private static let experimentalBuildLabel = "实验构建：连续编辑保持打开 v4"
 
     private enum State {
         case hidden
@@ -203,6 +203,7 @@ final class MenuBarController: NSObject {
         dividerItem.button?.isEnabled = true
         triggerItem.button?.toolTip = "编辑中：在下方栏拖动图标，蓝线左侧显示、右侧隐藏"
         state = .arranging
+        startOutsideClickMonitor()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(220)) { [weak self] in
             self?.presentArrangementEditor()
@@ -258,6 +259,9 @@ final class MenuBarController: NSObject {
     }
 
     private func hideNativeItems() {
+        layoutTask?.cancel()
+        layoutTask = nil
+        isApplyingLayout = false
         panel.close()
         stopOutsideClickMonitor()
         // Ice uses the same approach: a transparent, wide status item moves the items after it
@@ -320,7 +324,7 @@ final class MenuBarController: NSObject {
         else { return }
 
         isApplyingLayout = true
-        panel.dismissForLayoutTransaction()
+        panel.setArrangementCommitLocked(true)
         let visible = Array(snapshots.prefix(visibleCount))
         let hidden = Array(snapshots.dropFirst(visibleCount))
 
@@ -367,7 +371,7 @@ final class MenuBarController: NSObject {
             self.isApplyingLayout = false
             self.layoutTask = nil
             self.refreshSnapshotCache()
-            self.hideNativeItems()
+            self.panel.setArrangementCommitLocked(false)
 
             if !completed {
                 let alert = NSAlert()
@@ -382,10 +386,23 @@ final class MenuBarController: NSObject {
         guard outsideClickMonitor == nil else { return }
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] _ in
             DispatchQueue.main.async {
-                guard let self, self.state == .shown else { return }
-                self.panel.close()
+                guard let self else { return }
+                switch self.state {
+                case .shown:
+                    self.panel.close()
+                case .arranging where self.isNativeMenuBarClick():
+                    self.hideNativeItems()
+                case .hidden, .arranging:
+                    break
+                }
             }
         }
+    }
+
+    private func isNativeMenuBarClick() -> Bool {
+        let point = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }) else { return false }
+        return point.y >= screen.frame.maxY - NSStatusBar.system.thickness
     }
 
     private func stopOutsideClickMonitor() {
