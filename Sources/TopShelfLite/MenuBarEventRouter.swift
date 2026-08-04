@@ -6,7 +6,23 @@ import CoreGraphics
 /// and finally deliver it to the target process only after the session has accepted it.
 @MainActor
 final class MenuBarEventRouter {
-    func route(_ event: CGEvent, to targetPID: pid_t) async -> Bool {
+    enum Result: Equatable {
+        case delivered
+        case targetTapUnavailable
+        case timedOut
+        case tapDisabled
+
+        var description: String {
+            switch self {
+            case .delivered: "事件已送达"
+            case .targetTapUnavailable: "无法连接目标状态栏进程的事件通道"
+            case .timedOut: "事件路由超时"
+            case .tapDisabled: "macOS 停用了自动拖拽事件通道"
+            }
+        }
+    }
+
+    func route(_ event: CGEvent, to targetPID: pid_t) async -> Result {
         await RoutedMenuBarEvent(event: event, targetPID: targetPID).perform()
     }
 }
@@ -26,7 +42,7 @@ private final class RoutedMenuBarEvent: @unchecked Sendable {
     private var sessionPort: CFMachPort?
     private var sourceRunLoopSource: CFRunLoopSource?
     private var sessionRunLoopSource: CFRunLoopSource?
-    private var continuation: CheckedContinuation<Bool, Never>?
+    private var continuation: CheckedContinuation<MenuBarEventRouter.Result, Never>?
     private var finished = false
 
     init(event: CGEvent, targetPID: pid_t) {
@@ -36,7 +52,7 @@ private final class RoutedMenuBarEvent: @unchecked Sendable {
         runLoop = CFRunLoopGetCurrent()
     }
 
-    func perform() async -> Bool {
+    func perform() async -> MenuBarEventRouter.Result {
         await withCheckedContinuation { continuation in
             self.continuation = continuation
             Self.lock.lock()
@@ -48,7 +64,7 @@ private final class RoutedMenuBarEvent: @unchecked Sendable {
 
     private func install() {
         guard let marker = CGEvent(source: nil) else {
-            finish(false)
+            finish(.targetTapUnavailable)
             return
         }
         marker.setIntegerValueField(.eventSourceUserData, value: markerUserData)
@@ -77,7 +93,7 @@ private final class RoutedMenuBarEvent: @unchecked Sendable {
             let sourceRunLoopSource = CFMachPortCreateRunLoopSource(nil, sourcePort, 0),
             let sessionRunLoopSource = CFMachPortCreateRunLoopSource(nil, sessionPort, 0)
         else {
-            finish(false)
+            finish(.targetTapUnavailable)
             return
         }
 
@@ -91,7 +107,7 @@ private final class RoutedMenuBarEvent: @unchecked Sendable {
         CGEvent.tapEnable(tap: sessionPort, enable: true)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80)) { [weak self] in
-            self?.finish(false)
+            self?.finish(.timedOut)
         }
         marker.postToPid(targetPID)
     }
@@ -110,7 +126,7 @@ private final class RoutedMenuBarEvent: @unchecked Sendable {
             return Unmanaged.passUnretained(received)
         }
         event.postToPid(targetPID)
-        finish(true)
+        finish(.delivered)
         return Unmanaged.passUnretained(received)
     }
 
@@ -124,7 +140,7 @@ private final class RoutedMenuBarEvent: @unchecked Sendable {
         return fields.allSatisfy { received.getIntegerValueField($0) == event.getIntegerValueField($0) }
     }
 
-    private func finish(_ result: Bool) {
+    private func finish(_ result: MenuBarEventRouter.Result) {
         guard !finished else { return }
         finished = true
         if let sourceRunLoopSource { CFRunLoopRemoveSource(runLoop, sourceRunLoopSource, .commonModes) }
@@ -152,7 +168,7 @@ private final class RoutedMenuBarEvent: @unchecked Sendable {
         guard let userInfo else { return Unmanaged.passUnretained(event) }
         let routedEvent = Unmanaged<RoutedMenuBarEvent>.fromOpaque(userInfo).takeUnretainedValue()
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            routedEvent.finish(false)
+            routedEvent.finish(.tapDisabled)
             return Unmanaged.passUnretained(event)
         }
         return routedEvent.receiveMarker(event)
@@ -162,7 +178,7 @@ private final class RoutedMenuBarEvent: @unchecked Sendable {
         guard let userInfo else { return Unmanaged.passUnretained(event) }
         let routedEvent = Unmanaged<RoutedMenuBarEvent>.fromOpaque(userInfo).takeUnretainedValue()
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            routedEvent.finish(false)
+            routedEvent.finish(.tapDisabled)
             return Unmanaged.passUnretained(event)
         }
         return routedEvent.receiveSessionEvent(event)

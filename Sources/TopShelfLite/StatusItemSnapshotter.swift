@@ -15,6 +15,24 @@ struct StatusItemSnapshot: Identifiable {
 /// isolated so macOS-specific compatibility work stays out of the UI and menu-bar control code.
 @MainActor
 final class StatusItemSnapshotter {
+    enum MoveResult: Equatable {
+        case moved
+        case accessibilityDenied
+        case sourceOrTargetMissing
+        case eventRouting(MenuBarEventRouter.Result)
+        case positionNotConfirmed
+
+        var description: String {
+            switch self {
+            case .moved: "已移动"
+            case .accessibilityDenied: "辅助功能权限不可用"
+            case .sourceOrTargetMissing: "移动期间找不到源图标或分隔标记"
+            case .eventRouting(let result): result.description
+            case .positionNotConfirmed: "事件已送达，但 1.5 秒内未确认到新的相邻位置"
+            }
+        }
+    }
+
     private let eventRouter = MenuBarEventRouter()
     func capture(
         excluding ownPID: pid_t,
@@ -62,10 +80,10 @@ final class StatusItemSnapshotter {
     }
 
     /// Moves a real status item immediately beside another real item. It is deliberately
-    /// transactional: return `false` unless WindowServer confirms the expected adjacency.
+    /// transactional: reports the precise failed stage unless WindowServer confirms adjacency.
     @discardableResult
-    func move(windowID: CGWindowID, beside targetID: CGWindowID, onRight: Bool) async -> Bool {
-        guard accessibilityIsTrusted(prompting: true) else { return false }
+    func move(windowID: CGWindowID, beside targetID: CGWindowID, onRight: Bool) async -> MoveResult {
+        guard accessibilityIsTrusted(prompting: true) else { return .accessibilityDenied }
 
         for _ in 0..<3 {
             guard
@@ -73,7 +91,7 @@ final class StatusItemSnapshotter {
                 let target = statusWindow(for: targetID),
                 let source = CGEventSource(stateID: .hidSystemState)
             else {
-                return false
+                return .sourceOrTargetMissing
             }
 
             source.setLocalEventsFilterDuringSuppressionState(.permitAllEvents, state: .eventSuppressionStateRemoteMouseDrag)
@@ -84,16 +102,17 @@ final class StatusItemSnapshotter {
                 x: onRight ? target.frame.maxX : target.frame.minX,
                 y: target.frame.midY
             )
-            guard await postCommandDrag(item: item, target: target, destination: destination, source: source) else {
-                return false
+            let routingResult = await postCommandDrag(item: item, target: target, destination: destination, source: source)
+            guard routingResult == .delivered else {
+                return .eventRouting(routingResult)
             }
 
             if await waitForAdjacency(of: windowID, beside: targetID, onRight: onRight) {
-                return true
+                return .moved
             }
             try? await Task.sleep(for: .milliseconds(80))
         }
-        return false
+        return .positionNotConfirmed
     }
 
     /// Finds the actual WindowServer ID of one of TopShelfLite's own control items. AppKit's
@@ -176,7 +195,7 @@ final class StatusItemSnapshotter {
         target: StatusWindow,
         destination: CGPoint,
         source: CGEventSource
-    ) async -> Bool {
+    ) async -> MenuBarEventRouter.Result {
         guard
             let mouseDown = menuBarEvent(
                 type: .leftMouseDown,
@@ -195,12 +214,13 @@ final class StatusItemSnapshotter {
                 flags: []
             )
         else {
-            return false
+            return .targetTapUnavailable
         }
 
         // Route through the source process and session event stream before delivering to the
         // source process. A direct session post is ignored by current macOS status-bar hosts.
-        guard await eventRouter.route(mouseDown, to: item.ownerPID) else { return false }
+        let downResult = await eventRouter.route(mouseDown, to: item.ownerPID)
+        guard downResult == .delivered else { return downResult }
         return await eventRouter.route(mouseUp, to: item.ownerPID)
     }
 
@@ -230,20 +250,32 @@ final class StatusItemSnapshotter {
     }
 
     private func waitForAdjacency(of windowID: CGWindowID, beside targetID: CGWindowID, onRight: Bool) async -> Bool {
-        for _ in 0..<30 {
+        for _ in 0..<60 {
             guard !Task.isCancelled else { return false }
             if
                 let itemFrame = windowFrame(for: windowID),
                 let targetFrame = windowFrame(for: targetID)
             {
-                let edge = onRight ? itemFrame.minX - targetFrame.maxX : targetFrame.minX - itemFrame.maxX
-                if abs(edge) <= 2 {
+                let isOnCorrectSide = onRight
+                    ? itemFrame.minX >= targetFrame.maxX - 2
+                    : itemFrame.maxX <= targetFrame.minX + 2
+                if isOnCorrectSide, areAdjacentInMenuBar(windowID, targetID, onRight: onRight) {
                     return true
                 }
             }
             try? await Task.sleep(for: .milliseconds(25))
         }
         return false
+    }
+
+    private func areAdjacentInMenuBar(_ windowID: CGWindowID, _ targetID: CGWindowID, onRight: Bool) -> Bool {
+        let ids = statusItemWindows()
+            .sorted { $0.frame.minX < $1.frame.minX }
+            .map(\.id)
+        guard let itemIndex = ids.firstIndex(of: windowID), let targetIndex = ids.firstIndex(of: targetID) else {
+            return false
+        }
+        return onRight ? itemIndex == targetIndex + 1 : targetIndex == itemIndex + 1
     }
 
     /// System-owned controls are neither reliably movable nor part of TopShelfLite's scope.

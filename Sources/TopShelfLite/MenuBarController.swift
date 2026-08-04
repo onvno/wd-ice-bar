@@ -321,21 +321,26 @@ final class MenuBarController: NSObject {
         layoutTask?.cancel()
         layoutTask = Task { [weak self, snapshotter] in
             var completed = true
+            var failureDescription: String?
 
             // Inserting each list in reverse retains its left-to-right order next to the same
             // divider. A proxy drag therefore has the exact visual order chosen in the editor.
             for snapshot in visible.reversed() {
                 guard !Task.isCancelled else { return }
-                if !(await snapshotter.move(windowID: snapshot.id, beside: dividerID, onRight: true)) {
+                let result = await snapshotter.move(windowID: snapshot.id, beside: dividerID, onRight: true)
+                if result != .moved {
                     completed = false
+                    failureDescription = "\(snapshot.label)：\(result.description)"
                     break
                 }
             }
             if completed {
                 for snapshot in hidden.reversed() {
                     guard !Task.isCancelled else { return }
-                    if !(await snapshotter.move(windowID: snapshot.id, beside: dividerID, onRight: false)) {
+                    let result = await snapshotter.move(windowID: snapshot.id, beside: dividerID, onRight: false)
+                    if result != .moved {
                         completed = false
+                        failureDescription = "\(snapshot.label)：\(result.description)"
                         break
                     }
                 }
@@ -350,7 +355,7 @@ final class MenuBarController: NSObject {
             if !completed {
                 let alert = NSAlert()
                 alert.messageText = "部分图标未能移动"
-                alert.informativeText = "macOS 没有接受其中一次自动 ⌘ 拖拽，已停止余下移动。可再次进入编辑模式查看当前顺序并重试。"
+                alert.informativeText = "\(failureDescription ?? "无法确认移动结果")。已停止余下移动；可再次进入编辑模式查看当前顺序并重试。"
                 alert.runModal()
             }
         }
