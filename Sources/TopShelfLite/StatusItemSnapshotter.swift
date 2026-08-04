@@ -321,7 +321,9 @@ final class StatusItemSnapshotter {
         let systemOwners: Set<String> = ["Control Center", "SystemUIServer", "Window Server"]
         guard !systemOwners.contains(window.ownerName) else { return false }
         let reservedTitles: Set<String> = ["Clock", "BentoBox", "Siri", "AudioVideoModule", "FaceTime", "MusicRecognition"]
-        return !reservedTitles.contains(window.title)
+        // System modules expose implementation-specific suffixes such as "BentoBox-0". They
+        // can be captured as status-level windows but do not accept status-item reordering.
+        return !reservedTitles.contains { window.title == $0 || window.title.hasPrefix("\($0)-") }
     }
 
     private func privateMenuBarWindowIDs() -> [CGWindowID] {

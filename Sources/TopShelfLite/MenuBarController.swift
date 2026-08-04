@@ -40,7 +40,7 @@ final class MenuBarController: NSObject {
         static let divider = "TopShelfLite.Divider.v3"
     }
 
-    private static let experimentalBuildLabel = "实验构建：原生拖拽状态等待 r7425b30"
+    private static let experimentalBuildLabel = "实验构建：仅移动跨分隔线图标 v3"
 
     private enum State {
         case hidden
@@ -324,6 +324,12 @@ final class MenuBarController: NSObject {
         let visible = Array(snapshots.prefix(visibleCount))
         let hidden = Array(snapshots.dropFirst(visibleCount))
 
+        // The editor describes a desired visibility split. Only items that actually cross the
+        // divider need a native ⌘ drag. Re-dragging every already-correct item was both noisy
+        // and could stop the transaction on a non-movable item before the user's real change.
+        let visibleToMove = visible.filter { snapshotter.isWindow($0.id, toRightOf: dividerID) != true }
+        let hiddenToMove = hidden.filter { snapshotter.isWindow($0.id, toRightOf: dividerID) == true }
+
         layoutTask?.cancel()
         layoutTask = Task { [weak self, snapshotter] in
             var completed = true
@@ -336,7 +342,7 @@ final class MenuBarController: NSObject {
 
             // Inserting each list in reverse retains its left-to-right order next to the same
             // divider. A proxy drag therefore has the exact visual order chosen in the editor.
-            for snapshot in visible.reversed() {
+            for snapshot in visibleToMove.reversed() {
                 guard !Task.isCancelled else { return }
                 let result = await snapshotter.move(windowID: snapshot.id, beside: dividerID, onRight: true)
                 if result != .moved {
@@ -346,7 +352,7 @@ final class MenuBarController: NSObject {
                 }
             }
             if completed {
-                for snapshot in hidden.reversed() {
+                for snapshot in hiddenToMove.reversed() {
                     guard !Task.isCancelled else { return }
                     let result = await snapshotter.move(windowID: snapshot.id, beside: dividerID, onRight: false)
                     if result != .moved {
