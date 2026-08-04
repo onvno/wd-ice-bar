@@ -15,6 +15,7 @@ struct StatusItemSnapshot: Identifiable {
 /// isolated so macOS-specific compatibility work stays out of the UI and menu-bar control code.
 @MainActor
 final class StatusItemSnapshotter {
+    private let eventRouter = MenuBarEventRouter()
     func capture(
         excluding ownPID: pid_t,
         excludingTitles: Set<String>,
@@ -83,7 +84,7 @@ final class StatusItemSnapshotter {
                 x: onRight ? target.frame.maxX : target.frame.minX,
                 y: target.frame.midY
             )
-            guard postCommandDrag(item: item, target: target, destination: destination, source: source) else {
+            guard await postCommandDrag(item: item, target: target, destination: destination, source: source) else {
                 return false
             }
 
@@ -175,7 +176,7 @@ final class StatusItemSnapshotter {
         target: StatusWindow,
         destination: CGPoint,
         source: CGEventSource
-    ) -> Bool {
+    ) async -> Bool {
         guard
             let mouseDown = menuBarEvent(
                 type: .leftMouseDown,
@@ -197,11 +198,10 @@ final class StatusItemSnapshotter {
             return false
         }
 
-        // Status-bar moves are interpreted by the session event stream, not by a normal
-        // AppKit dragging session. These fields mirror the real source/target windows.
-        mouseDown.post(tap: .cgSessionEventTap)
-        mouseUp.post(tap: .cgSessionEventTap)
-        return true
+        // Route through the source process and session event stream before delivering to the
+        // source process. A direct session post is ignored by current macOS status-bar hosts.
+        guard await eventRouter.route(mouseDown, to: item.ownerPID) else { return false }
+        return await eventRouter.route(mouseUp, to: item.ownerPID)
     }
 
     private func menuBarEvent(
