@@ -40,7 +40,7 @@ final class MenuBarController: NSObject {
         static let divider = "TopShelfLite.Divider.v3"
     }
 
-    private static let experimentalBuildLabel = "实验构建：连续编辑保持打开 v4"
+    private static let experimentalBuildLabel = "实验构建：隐藏项原生右键 v5"
 
     private enum State {
         case hidden
@@ -54,6 +54,7 @@ final class MenuBarController: NSObject {
     private let panel = HiddenItemsPanel()
     private var cachedSnapshots: [StatusItemSnapshot] = []
     private var outsideClickMonitor: Any?
+    private var nativeContextMenuIsOpen = false
     private var layoutTask: Task<Void, Never>?
     private var isApplyingLayout = false
     private var iconChoice: IconChoice {
@@ -279,7 +280,7 @@ final class MenuBarController: NSObject {
         panel.show(
             snapshots: cachedSnapshots,
             onClose: { [weak self] in self?.hideNativeItems() },
-            onActivate: { [weak self] windowID in self?.activateNativeItem(windowID) }
+            onActivate: { [weak self] windowID, mouseButton in self?.activateNativeItem(windowID, mouseButton: mouseButton) }
         )
         state = .shown
         updateTriggerIcon(isHidden: false)
@@ -389,7 +390,12 @@ final class MenuBarController: NSObject {
                 guard let self else { return }
                 switch self.state {
                 case .shown:
-                    self.panel.close()
+                    if self.nativeContextMenuIsOpen {
+                        self.nativeContextMenuIsOpen = false
+                        self.hideNativeItems()
+                    } else {
+                        self.panel.close()
+                    }
                 case .arranging where self.isNativeMenuBarClick():
                     self.hideNativeItems()
                 case .hidden, .arranging:
@@ -432,16 +438,26 @@ final class MenuBarController: NSObject {
         }
     }
 
-    private func activateNativeItem(_ windowID: CGWindowID) {
+    private func activateNativeItem(_ windowID: CGWindowID, mouseButton: CGMouseButton) {
         // The original item must briefly return to the menu bar before macOS can deliver a click.
         dividerItem.length = 1
         state = .shown
 
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(120)) { [weak self] in
             guard let self else { return }
-            _ = self.snapshotter.click(windowID: windowID, promptingForAccessibility: true)
-            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self] in
-                self?.hideNativeItems()
+            _ = self.snapshotter.click(
+                windowID: windowID,
+                mouseButton: mouseButton,
+                promptingForAccessibility: true
+            )
+            if mouseButton == .right {
+                // Keep the real item exposed while its own contextual menu is on screen. The
+                // next ordinary left click closes that menu and restores the hidden layout.
+                self.nativeContextMenuIsOpen = true
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self] in
+                    self?.hideNativeItems()
+                }
             }
         }
     }

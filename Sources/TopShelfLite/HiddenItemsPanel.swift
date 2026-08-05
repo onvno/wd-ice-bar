@@ -2,7 +2,7 @@ import AppKit
 
 final class HiddenItemsPanel: NSPanel {
     private var closeHandler: (() -> Void)?
-    private var activateHandler: ((CGWindowID) -> Void)?
+    private var activateHandler: ((CGWindowID, CGMouseButton) -> Void)?
     private weak var arrangementEditor: ArrangementEditorView?
     private var isDismissing = false
 
@@ -23,7 +23,7 @@ final class HiddenItemsPanel: NSPanel {
     func show(
         snapshots: [StatusItemSnapshot],
         onClose: @escaping () -> Void,
-        onActivate: @escaping (CGWindowID) -> Void
+        onActivate: @escaping (CGWindowID, CGMouseButton) -> Void
     ) {
         closeHandler = onClose
         activateHandler = onActivate
@@ -131,6 +131,7 @@ final class HiddenItemsPanel: NSPanel {
                 button.bezelStyle = .regularSquare
                 button.isBordered = false
                 button.contentTintColor = .white
+                button.sendAction(on: [.leftMouseUp, .rightMouseUp])
                 button.identifier = NSUserInterfaceItemIdentifier(String(snapshot.id))
                 stack.addArrangedSubview(button)
             }
@@ -140,11 +141,12 @@ final class HiddenItemsPanel: NSPanel {
 
     @objc private func activateSnapshot(_ sender: NSButton) {
         guard let identifier = sender.identifier?.rawValue, let id = UInt32(identifier) else { return }
+        let mouseButton: CGMouseButton = NSApp.currentEvent?.type == .rightMouseUp ? .right : .left
         let handler = activateHandler
         closeHandler = nil
         activateHandler = nil
         super.close()
-        handler?(id)
+        handler?(id, mouseButton)
     }
 
     @objc private func requestScreenRecording() {

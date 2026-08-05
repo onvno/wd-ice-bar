@@ -135,11 +135,11 @@ final class StatusItemSnapshotter {
         return itemFrame.minX >= dividerFrame.maxX - 1
     }
 
-    /// Reveals an original status item briefly, then sends it the same left click a user would.
+    /// Reveals an original status item briefly, then sends it the same mouse click a user would.
     /// macOS requires Accessibility permission for synthesized input, so the first click can
     /// display the system permission prompt instead of silently doing nothing.
     @discardableResult
-    func click(windowID: CGWindowID, promptingForAccessibility: Bool) -> Bool {
+    func click(windowID: CGWindowID, mouseButton: CGMouseButton, promptingForAccessibility: Bool) -> Bool {
         guard accessibilityIsTrusted(prompting: promptingForAccessibility),
               let frame = windowFrame(for: windowID),
               let source = CGEventSource(stateID: .hidSystemState)
@@ -148,17 +148,19 @@ final class StatusItemSnapshotter {
         }
 
         let point = CGPoint(x: frame.midX, y: frame.midY)
+        let mouseDownType: CGEventType = mouseButton == .right ? .rightMouseDown : .leftMouseDown
+        let mouseUpType: CGEventType = mouseButton == .right ? .rightMouseUp : .leftMouseUp
         CGEvent(
             mouseEventSource: source,
-            mouseType: .leftMouseDown,
+            mouseType: mouseDownType,
             mouseCursorPosition: point,
-            mouseButton: .left
+            mouseButton: mouseButton
         )?.post(tap: .cghidEventTap)
         CGEvent(
             mouseEventSource: source,
-            mouseType: .leftMouseUp,
+            mouseType: mouseUpType,
             mouseCursorPosition: point,
-            mouseButton: .left
+            mouseButton: mouseButton
         )?.post(tap: .cghidEventTap)
         return true
     }
