@@ -1,7 +1,10 @@
 # wd-ice-bar
 
 轻量的 macOS 菜单栏图标管理工具：将一部分第三方状态栏图标隐藏到自定义栏，并在需要时恢复原生图标进行左键、右键和显隐调整。
+
 ![](./docs/bar-wd.gif)
+
+[一篇内容整理](./docs.desc.md)
 
 ## 功能
 
@@ -32,3 +35,6 @@ open build/wd-ice-bar.app
 ## 实现边界
 
 wd-ice-bar 使用公开的窗口列表/截图与输入事件 API，并依赖私有 WindowServer 菜单栏窗口枚举来识别状态栏项。这使其能处理被挤出屏幕的图标，但该私有接口可能随 macOS 升级变化。详见 [Ice 实现对照](docs/ice-comparison.md)。
+
+
+参考实现：[Ice](https://github.com/jordanbaird/Ice)
