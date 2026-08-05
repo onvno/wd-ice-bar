@@ -131,12 +131,16 @@ final class MenuBarController: NSObject {
     private func makeContextMenu() -> NSMenu {
         let menu = NSMenu()
         let arrange = NSMenuItem(
-            title: "编辑所有菜单栏图标（实验）",
+            title: "调整菜单显隐",
             action: #selector(enterArrangementMode),
             keyEquivalent: ""
         )
         arrange.target = self
         menu.addItem(arrange)
+
+        let systemSettings = NSMenuItem(title: "打开系统菜单管理", action: #selector(openMenuBarSettings), keyEquivalent: "")
+        systemSettings.target = self
+        menu.addItem(systemSettings)
 
         let refresh = NSMenuItem(
             title: "刷新应用",
@@ -175,10 +179,6 @@ final class MenuBarController: NSObject {
             launchAtLogin.state = .off
         }
         menu.addItem(launchAtLogin)
-
-        let systemSettings = NSMenuItem(title: "打开系统菜单管理", action: #selector(openMenuBarSettings), keyEquivalent: "")
-        systemSettings.target = self
-        menu.addItem(systemSettings)
 
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "退出", action: #selector(quitApplication), keyEquivalent: "q")
