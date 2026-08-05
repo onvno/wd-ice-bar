@@ -443,21 +443,29 @@ final class MenuBarController: NSObject {
         dividerItem.length = 1
         state = .shown
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(120)) { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                let didClick = await self.snapshotter.click(
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if let dividerID = self.snapshotter.statusItemWindowID(titled: ItemName.divider) {
+                _ = await self.snapshotter.waitForNativeInteractionTarget(
                     windowID: windowID,
-                    mouseButton: mouseButton,
-                    promptingForAccessibility: true
+                    dividerID: dividerID
                 )
-                if mouseButton == .right, didClick {
-                    // Keep the real item exposed while its own contextual menu is on screen.
-                    self.nativeContextMenuIsOpen = true
-                } else {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self] in
-                        self?.hideNativeItems()
-                    }
+            } else {
+                // Defensive fallback if WindowServer has not exposed our own divider yet.
+                try? await Task.sleep(for: .milliseconds(120))
+            }
+
+            let didClick = await self.snapshotter.click(
+                windowID: windowID,
+                mouseButton: mouseButton,
+                promptingForAccessibility: true
+            )
+            if mouseButton == .right, didClick {
+                // Keep the real item exposed while its own contextual menu is on screen.
+                self.nativeContextMenuIsOpen = true
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self] in
+                    self?.hideNativeItems()
                 }
             }
         }

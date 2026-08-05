@@ -202,6 +202,11 @@ final class HiddenItemsPanel: NSPanel {
 private final class SnapshotButton: NSButton {
     var rightMouseUpHandler: (() -> Void)?
 
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
     override func rightMouseDown(with event: NSEvent) {
         // Intentionally consume the down event: the original status item's own context menu is
         // opened only after TopShelfLite has restored that native item.
