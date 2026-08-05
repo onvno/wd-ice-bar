@@ -40,8 +40,6 @@ final class MenuBarController: NSObject {
         static let divider = "TopShelfLite.Divider.v3"
     }
 
-    private static let experimentalBuildLabel = "实验构建：稳定右键与图标对比 v9"
-
     private enum State {
         case hidden
         case shown
@@ -132,10 +130,6 @@ final class MenuBarController: NSObject {
 
     private func makeContextMenu() -> NSMenu {
         let menu = NSMenu()
-        let buildLabel = NSMenuItem(title: Self.experimentalBuildLabel, action: nil, keyEquivalent: "")
-        buildLabel.isEnabled = false
-        menu.addItem(buildLabel)
-        menu.addItem(.separator())
         let arrange = NSMenuItem(
             title: "编辑所有菜单栏图标（实验）",
             action: #selector(enterArrangementMode),
@@ -145,7 +139,7 @@ final class MenuBarController: NSObject {
         menu.addItem(arrange)
 
         let refresh = NSMenuItem(
-            title: "刷新隐藏图标",
+            title: "刷新应用",
             action: #selector(refreshHiddenItems),
             keyEquivalent: ""
         )
@@ -166,7 +160,7 @@ final class MenuBarController: NSObject {
         menu.addItem(iconMenuItem)
 
         let launchAtLogin = NSMenuItem(
-            title: "开机时启动 TopShelfLite",
+            title: "开机启动",
             action: #selector(toggleLaunchAtLogin),
             keyEquivalent: ""
         )
@@ -182,12 +176,12 @@ final class MenuBarController: NSObject {
         }
         menu.addItem(launchAtLogin)
 
-        let systemSettings = NSMenuItem(title: "打开系统设置：控制中心", action: #selector(openMenuBarSettings), keyEquivalent: "")
+        let systemSettings = NSMenuItem(title: "打开系统菜单管理", action: #selector(openMenuBarSettings), keyEquivalent: "")
         systemSettings.target = self
         menu.addItem(systemSettings)
 
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "退出 TopShelfLite", action: #selector(quitApplication), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "退出", action: #selector(quitApplication), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
         return menu
