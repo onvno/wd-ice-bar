@@ -130,7 +130,13 @@ final class HiddenItemsPanel: NSPanel {
                 button.toolTip = snapshot.label
                 button.bezelStyle = .regularSquare
                 button.isBordered = false
-                button.contentTintColor = .white
+                // These are captured pixels, not template symbols. Preserve their original
+                // color and give both black and white status icons enough local contrast.
+                button.image?.isTemplate = false
+                button.contentTintColor = nil
+                button.wantsLayer = true
+                button.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.16).cgColor
+                button.layer?.cornerRadius = 6
                 button.identifier = NSUserInterfaceItemIdentifier(String(snapshot.id))
                 button.rightMouseUpHandler = { [weak self, weak button] in
                     guard let self, let button else { return }

@@ -445,15 +445,9 @@ final class MenuBarController: NSObject {
 
         Task { @MainActor [weak self] in
             guard let self else { return }
-            if let dividerID = self.snapshotter.statusItemWindowID(titled: ItemName.divider) {
-                _ = await self.snapshotter.waitForNativeInteractionTarget(
-                    windowID: windowID,
-                    dividerID: dividerID
-                )
-            } else {
-                // Defensive fallback if WindowServer has not exposed our own divider yet.
-                try? await Task.sleep(for: .milliseconds(120))
-            }
+            // A WindowServer frame can move before the status-item host finishes installing its
+            // contextual-menu tracking. A short settle time is more reliable for right clicks.
+            try? await Task.sleep(for: .milliseconds(220))
 
             let didClick = await self.snapshotter.click(
                 windowID: windowID,

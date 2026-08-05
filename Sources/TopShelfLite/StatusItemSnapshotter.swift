@@ -135,19 +135,6 @@ final class StatusItemSnapshotter {
         return itemFrame.minX >= dividerFrame.maxX - 1
     }
 
-    /// Waits until a previously hidden item has returned to the native, visible side of our
-    /// divider. This is more reliable than a fixed delay for slow status-item hosts.
-    func waitForNativeInteractionTarget(windowID: CGWindowID, dividerID: CGWindowID) async -> Bool {
-        for _ in 0..<45 {
-            guard !Task.isCancelled else { return false }
-            if isWindow(windowID, toRightOf: dividerID) == true {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
-    }
-
     /// Reveals an original status item briefly, then sends it the same mouse click a user would.
     /// macOS requires Accessibility permission for synthesized input, so the first click can
     /// display the system permission prompt instead of silently doing nothing.
