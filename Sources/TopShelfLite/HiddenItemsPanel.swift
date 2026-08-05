@@ -131,8 +131,10 @@ final class HiddenItemsPanel: NSPanel {
                 button.bezelStyle = .regularSquare
                 button.isBordered = false
                 button.contentTintColor = .white
-                button.sendAction(on: [.leftMouseUp, .rightMouseUp])
                 button.identifier = NSUserInterfaceItemIdentifier(String(snapshot.id))
+                let rightClick = NSClickGestureRecognizer(target: self, action: #selector(activateSnapshotWithRightClick))
+                rightClick.buttonMask = 0x2
+                button.addGestureRecognizer(rightClick)
                 stack.addArrangedSubview(button)
             }
         }
@@ -140,8 +142,16 @@ final class HiddenItemsPanel: NSPanel {
     }
 
     @objc private func activateSnapshot(_ sender: NSButton) {
+        forwardSnapshotActivation(sender, mouseButton: .left)
+    }
+
+    @objc private func activateSnapshotWithRightClick(_ recognizer: NSClickGestureRecognizer) {
+        guard recognizer.state == .recognized, let button = recognizer.view as? NSButton else { return }
+        forwardSnapshotActivation(button, mouseButton: .right)
+    }
+
+    private func forwardSnapshotActivation(_ sender: NSButton, mouseButton: CGMouseButton) {
         guard let identifier = sender.identifier?.rawValue, let id = UInt32(identifier) else { return }
-        let mouseButton: CGMouseButton = NSApp.currentEvent?.type == .rightMouseUp ? .right : .left
         let handler = activateHandler
         closeHandler = nil
         activateHandler = nil
