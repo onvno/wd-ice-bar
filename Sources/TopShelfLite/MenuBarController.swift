@@ -40,7 +40,7 @@ final class MenuBarController: NSObject {
         static let divider = "TopShelfLite.Divider.v3"
     }
 
-    private static let experimentalBuildLabel = "实验构建：隐藏项原生右键 v5"
+    private static let experimentalBuildLabel = "实验构建：显式隐藏项右键 v6"
 
     private enum State {
         case hidden
