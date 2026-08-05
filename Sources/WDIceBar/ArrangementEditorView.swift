@@ -17,7 +17,7 @@ final class ArrangementEditorView: NSView {
         self.onCommit = onCommit
         let width = max(260, edge * 2 + CGFloat(snapshots.count) * itemWidth + 6)
         super.init(frame: CGRect(x: 0, y: 0, width: width, height: 44))
-        toolTip = "拖动图标；蓝线左侧显示在原生菜单栏，右侧隐藏在 TopShelfLite"
+        toolTip = "拖动图标；蓝线左侧显示在原生菜单栏，右侧隐藏在 wd-ice-bar"
     }
 
     required init?(coder: NSCoder) { nil }
@@ -28,7 +28,7 @@ final class ArrangementEditorView: NSView {
         isCommitLocked = locked
         toolTip = locked
             ? "正在应用到原生菜单栏…"
-            : "拖动图标；蓝线左侧显示在原生菜单栏，右侧隐藏在 TopShelfLite"
+            : "拖动图标；蓝线左侧显示在原生菜单栏，右侧隐藏在 wd-ice-bar"
     }
 
     override func draw(_ dirtyRect: NSRect) {

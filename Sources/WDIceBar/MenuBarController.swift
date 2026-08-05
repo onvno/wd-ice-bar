@@ -36,8 +36,8 @@ final class MenuBarController: NSObject {
     }
 
     private enum ItemName {
-        static let trigger = "TopShelfLite.Toggle.v3"
-        static let divider = "TopShelfLite.Divider.v3"
+        static let trigger = "WDIceBar.Toggle.v1"
+        static let divider = "WDIceBar.Divider.v1"
     }
 
     private enum State {
@@ -56,8 +56,8 @@ final class MenuBarController: NSObject {
     private var layoutTask: Task<Void, Never>?
     private var isApplyingLayout = false
     private var iconChoice: IconChoice {
-        get { IconChoice(rawValue: UserDefaults.standard.string(forKey: "TopShelfLite.IconChoice") ?? "") ?? .grid }
-        set { UserDefaults.standard.set(newValue.rawValue, forKey: "TopShelfLite.IconChoice") }
+        get { IconChoice(rawValue: UserDefaults.standard.string(forKey: "WDIceBar.IconChoice") ?? "") ?? .grid }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "WDIceBar.IconChoice") }
     }
 
     private var state: State = .shown

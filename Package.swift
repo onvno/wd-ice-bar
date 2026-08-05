@@ -2,15 +2,15 @@
 import PackageDescription
 
 let package = Package(
-    name: "TopShelfLite",
+    name: "wd-ice-bar",
     platforms: [.macOS(.v14)],
     products: [
-        .executable(name: "TopShelfLite", targets: ["TopShelfLite"]),
+        .executable(name: "wd-ice-bar", targets: ["WDIceBar"]),
     ],
     targets: [
         .executableTarget(
-            name: "TopShelfLite",
-            path: "Sources/TopShelfLite"
+            name: "WDIceBar",
+            path: "Sources/WDIceBar"
         ),
     ]
 )

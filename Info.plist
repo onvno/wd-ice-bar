@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDisplayName</key>
-    <string>TopShelfLite</string>
+    <string>wd-ice-bar</string>
     <key>CFBundleExecutable</key>
-    <string>TopShelfLite</string>
+    <string>wd-ice-bar</string>
     <key>CFBundleIdentifier</key>
-    <string>local.topshelflite</string>
+    <string>local.wd-ice-bar</string>
     <key>CFBundleName</key>
-    <string>TopShelfLite</string>
+    <string>wd-ice-bar</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

@@ -215,7 +215,7 @@ private final class SnapshotButton: NSButton {
 
     override func rightMouseDown(with event: NSEvent) {
         // Intentionally consume the down event: the original status item's own context menu is
-        // opened only after TopShelfLite has restored that native item.
+        // opened only after wd-ice-bar has restored that native item.
     }
 
     override func rightMouseUp(with event: NSEvent) {

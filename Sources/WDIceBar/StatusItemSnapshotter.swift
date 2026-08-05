@@ -122,7 +122,7 @@ final class StatusItemSnapshotter {
         return lastRoutingFailure.map(MoveResult.eventRouting) ?? .positionNotConfirmed
     }
 
-    /// Finds the actual WindowServer ID of one of TopShelfLite's own control items. AppKit's
+    /// Finds the actual WindowServer ID of one of wd-ice-bar's own control items. AppKit's
     /// `windowNumber` can be negative and must not be converted directly to `CGWindowID`.
     func statusItemWindowID(titled title: String) -> CGWindowID? {
         statusItemWindows().first { $0.title == title }?.id
@@ -341,7 +341,7 @@ final class StatusItemSnapshotter {
         return onRight ? itemIndex == targetIndex + 1 : targetIndex == itemIndex + 1
     }
 
-    /// System-owned controls are neither reliably movable nor part of TopShelfLite's scope.
+    /// System-owned controls are neither reliably movable nor part of wd-ice-bar's scope.
     /// Filtering them before the editor is important: otherwise the date and Control Center can
     /// accidentally be treated as ordinary app icons.
     private func isUserMenuBarItem(_ window: StatusWindow) -> Bool {

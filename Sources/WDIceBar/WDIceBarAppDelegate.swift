@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor
-final class TopShelfLiteAppDelegate: NSObject, NSApplicationDelegate {
+final class WDIceBarAppDelegate: NSObject, NSApplicationDelegate {
     private let controller = MenuBarController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
