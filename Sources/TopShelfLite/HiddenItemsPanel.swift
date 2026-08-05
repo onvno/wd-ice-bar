@@ -124,7 +124,7 @@ final class HiddenItemsPanel: NSPanel {
             stack.addArrangedSubview(permissionButton)
         } else {
             for snapshot in snapshots {
-                let button = NSButton(image: snapshot.image, target: self, action: #selector(activateSnapshot))
+                let button = SnapshotButton(image: snapshot.image, target: self, action: #selector(activateSnapshot))
                 button.imageScaling = .scaleProportionallyDown
                 button.setFrameSize(CGSize(width: max(20, snapshot.image.size.width), height: 24))
                 button.toolTip = snapshot.label
@@ -132,9 +132,10 @@ final class HiddenItemsPanel: NSPanel {
                 button.isBordered = false
                 button.contentTintColor = .white
                 button.identifier = NSUserInterfaceItemIdentifier(String(snapshot.id))
-                let rightClick = NSClickGestureRecognizer(target: self, action: #selector(activateSnapshotWithRightClick))
-                rightClick.buttonMask = 0x2
-                button.addGestureRecognizer(rightClick)
+                button.rightMouseUpHandler = { [weak self, weak button] in
+                    guard let self, let button else { return }
+                    self.forwardSnapshotActivation(button, mouseButton: .right)
+                }
                 stack.addArrangedSubview(button)
             }
         }
@@ -143,11 +144,6 @@ final class HiddenItemsPanel: NSPanel {
 
     @objc private func activateSnapshot(_ sender: NSButton) {
         forwardSnapshotActivation(sender, mouseButton: .left)
-    }
-
-    @objc private func activateSnapshotWithRightClick(_ recognizer: NSClickGestureRecognizer) {
-        guard recognizer.state == .recognized, let button = recognizer.view as? NSButton else { return }
-        forwardSnapshotActivation(button, mouseButton: .right)
     }
 
     private func forwardSnapshotActivation(_ sender: NSButton, mouseButton: CGMouseButton) {
@@ -198,5 +194,20 @@ final class HiddenItemsPanel: NSPanel {
         } completionHandler: {
             completion?()
         }
+    }
+}
+
+/// NSButton's default action routing is optimized for primary clicks. Capture secondary clicks
+/// directly so a nonactivating panel cannot swallow them before they reach the forwarding logic.
+private final class SnapshotButton: NSButton {
+    var rightMouseUpHandler: (() -> Void)?
+
+    override func rightMouseDown(with event: NSEvent) {
+        // Intentionally consume the down event: the original status item's own context menu is
+        // opened only after TopShelfLite has restored that native item.
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        rightMouseUpHandler?()
     }
 }

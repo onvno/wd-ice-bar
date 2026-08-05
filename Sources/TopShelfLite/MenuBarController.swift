@@ -40,7 +40,7 @@ final class MenuBarController: NSObject {
         static let divider = "TopShelfLite.Divider.v3"
     }
 
-    private static let experimentalBuildLabel = "实验构建：显式隐藏项右键 v6"
+    private static let experimentalBuildLabel = "实验构建：目标路由右键 v7"
 
     private enum State {
         case hidden
@@ -444,19 +444,20 @@ final class MenuBarController: NSObject {
         state = .shown
 
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(120)) { [weak self] in
-            guard let self else { return }
-            _ = self.snapshotter.click(
-                windowID: windowID,
-                mouseButton: mouseButton,
-                promptingForAccessibility: true
-            )
-            if mouseButton == .right {
-                // Keep the real item exposed while its own contextual menu is on screen. The
-                // next ordinary left click closes that menu and restores the hidden layout.
-                self.nativeContextMenuIsOpen = true
-            } else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self] in
-                    self?.hideNativeItems()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let didClick = await self.snapshotter.click(
+                    windowID: windowID,
+                    mouseButton: mouseButton,
+                    promptingForAccessibility: true
+                )
+                if mouseButton == .right, didClick {
+                    // Keep the real item exposed while its own contextual menu is on screen.
+                    self.nativeContextMenuIsOpen = true
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self] in
+                        self?.hideNativeItems()
+                    }
                 }
             }
         }

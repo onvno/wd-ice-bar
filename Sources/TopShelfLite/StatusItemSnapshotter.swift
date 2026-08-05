@@ -139,7 +139,7 @@ final class StatusItemSnapshotter {
     /// macOS requires Accessibility permission for synthesized input, so the first click can
     /// display the system permission prompt instead of silently doing nothing.
     @discardableResult
-    func click(windowID: CGWindowID, mouseButton: CGMouseButton, promptingForAccessibility: Bool) -> Bool {
+    func click(windowID: CGWindowID, mouseButton: CGMouseButton, promptingForAccessibility: Bool) async -> Bool {
         guard accessibilityIsTrusted(prompting: promptingForAccessibility),
               let frame = windowFrame(for: windowID),
               let source = CGEventSource(stateID: .hidSystemState)
@@ -148,6 +148,31 @@ final class StatusItemSnapshotter {
         }
 
         let point = CGPoint(x: frame.midX, y: frame.midY)
+        if mouseButton == .right,
+           let item = statusWindow(for: windowID),
+           let mouseDown = menuBarEvent(
+               type: .rightMouseDown,
+               location: point,
+               targetWindowID: item.id,
+               ownerPID: item.ownerPID,
+               source: source,
+               flags: []
+           ),
+           let mouseUp = menuBarEvent(
+               type: .rightMouseUp,
+               location: point,
+               targetWindowID: item.id,
+               ownerPID: item.ownerPID,
+               source: source,
+               flags: []
+           )
+        {
+            // Status-item context menus are stricter than primary clicks: route the event with
+            // the actual target WindowID and owner PID, matching the proven drag route.
+            guard await eventRouter.route(mouseDown, to: item.ownerPID) == .delivered else { return false }
+            return await eventRouter.route(mouseUp, to: item.ownerPID) == .delivered
+        }
+
         let mouseDownType: CGEventType = mouseButton == .right ? .rightMouseDown : .leftMouseDown
         let mouseUpType: CGEventType = mouseButton == .right ? .rightMouseUp : .leftMouseUp
         CGEvent(
