@@ -173,14 +173,19 @@ final class HiddenItemsPanel: NSPanel {
                 button.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.16).cgColor
                 button.layer?.cornerRadius = 6
                 button.snapshot = snapshot
-                let hoverText = snapshot.isOffscreen
-                    ? "\(snapshot.label) · 请先移到显示侧"
-                    : snapshot.label
-                button.hoverEnteredHandler = { [weak self, weak button] in
-                    guard let self, let button else { return }
-                    self.showHoverLabel(hoverText, for: button)
+                // A no-capture fallback can be backed only by a WindowServer implementation
+                // name (for example Item-0), which is not a trustworthy app title. Avoid a
+                // misleading hover label for those entries.
+                if !snapshot.usesFallbackImage {
+                    let hoverText = snapshot.isOffscreen
+                        ? "\(snapshot.label) · 请先移到显示侧"
+                        : snapshot.label
+                    button.hoverEnteredHandler = { [weak self, weak button] in
+                        guard let self, let button else { return }
+                        self.showHoverLabel(hoverText, for: button)
+                    }
+                    button.hoverExitedHandler = { [weak self] in self?.hideHoverLabel() }
                 }
-                button.hoverExitedHandler = { [weak self] in self?.hideHoverLabel() }
                 button.rightMouseUpHandler = { [weak self, weak button] in
                     guard let self, let button else { return }
                     self.forwardSnapshotActivation(button, mouseButton: .right)

@@ -205,7 +205,7 @@ final class StatusItemSnapshotter {
     }
 
     private func fallbackImage(for label: String) -> NSImage? {
-        let character = label.trimmingCharacters(in: .whitespacesAndNewlines).first ?? "?"
+        let glyph = fallbackGlyph(for: label)
         let image = NSImage(size: CGSize(width: 24, height: 24))
         image.lockFocus()
         defer { image.unlockFocus() }
@@ -218,12 +218,21 @@ final class StatusItemSnapshotter {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+            .font: NSFont.systemFont(ofSize: glyph.count > 1 ? 9 : 13, weight: .semibold),
             .foregroundColor: NSColor.white,
             .paragraphStyle: paragraph,
         ]
-        String(character).draw(in: NSRect(x: 1, y: 4, width: 22, height: 16), withAttributes: attributes)
+        glyph.draw(in: NSRect(x: 1, y: 4, width: 22, height: 16), withAttributes: attributes)
         return image
+    }
+
+    private func fallbackGlyph(for label: String) -> String {
+        let prefix = "未命名菜单图标 #"
+        if label.hasPrefix(prefix) {
+            let id = label.dropFirst(prefix.count)
+            return String(id.suffix(3))
+        }
+        return String(label.trimmingCharacters(in: .whitespacesAndNewlines).first ?? "?")
     }
 
     private func isHorizontallyOffscreen(_ frame: CGRect) -> Bool {
