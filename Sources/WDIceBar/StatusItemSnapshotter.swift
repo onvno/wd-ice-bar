@@ -174,15 +174,23 @@ final class StatusItemSnapshotter {
     }
 
     /// WindowServer frequently assigns untitled status items implementation names such as
-    /// `Item-0`. They are not user-facing titles and made every fallback icon look like `I`.
-    /// Prefer the owning app's localized name for those entries.
+    /// `Item-0`. They are not user-facing titles. On current macOS those items are commonly
+    /// hosted by Control Center, so its process name is not the source application's name
+    /// either. Keep the label honest and distinguish the item by its live WindowID instead.
     private func displayLabel(for window: StatusWindow) -> String {
         let title = window.title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty, !isGeneratedWindowTitle(title) else {
+            if isSharedMenuBarHost(window.ownerName) {
+                return "未命名菜单图标 #\(window.id)"
+            }
             return NSRunningApplication(processIdentifier: window.ownerPID)?.localizedName
                 ?? window.ownerName
         }
         return title
+    }
+
+    private func isSharedMenuBarHost(_ name: String) -> Bool {
+        ["Control Center", "SystemUIServer"].contains(name)
     }
 
     private func isGeneratedWindowTitle(_ title: String) -> Bool {
