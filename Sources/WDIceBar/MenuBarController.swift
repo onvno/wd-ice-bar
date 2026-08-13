@@ -274,7 +274,7 @@ final class MenuBarController: NSObject {
         panel.show(
             snapshots: cachedSnapshots,
             onClose: { [weak self] in self?.hideNativeItems() },
-            onActivate: { [weak self] windowID, mouseButton in self?.activateNativeItem(windowID, mouseButton: mouseButton) }
+            onActivate: { [weak self] snapshot, mouseButton in self?.activateNativeItem(snapshot, mouseButton: mouseButton) }
         )
         state = .shown
         updateTriggerIcon(isHidden: false)
@@ -422,17 +422,27 @@ final class MenuBarController: NSObject {
     }
 
     private func refreshSnapshotCache() {
-        let snapshots = snapshotter.capture(
+        let hiddenSnapshots = snapshotter.capture(
             excluding: getpid(),
             excludingTitles: [ItemName.divider, ItemName.trigger],
             maximumX: dividerItem.button?.window?.frame.maxX
         )
+        let offscreenSnapshots = snapshotter.captureOffscreenCandidates(
+            excluding: getpid(),
+            excludingTitles: [ItemName.divider, ItemName.trigger]
+        )
+        let snapshots = mergeSnapshots(hiddenSnapshots, offscreenSnapshots)
         if !snapshots.isEmpty {
             cachedSnapshots = snapshots
         }
     }
 
-    private func activateNativeItem(_ windowID: CGWindowID, mouseButton: CGMouseButton) {
+    private func mergeSnapshots(_ first: [StatusItemSnapshot], _ second: [StatusItemSnapshot]) -> [StatusItemSnapshot] {
+        var seen = Set<CGWindowID>()
+        return (first + second).filter { seen.insert($0.id).inserted }
+    }
+
+    private func activateNativeItem(_ snapshot: StatusItemSnapshot, mouseButton: CGMouseButton) {
         // The original item must briefly return to the menu bar before macOS can deliver a click.
         dividerItem.length = 1
         state = .shown
@@ -443,8 +453,17 @@ final class MenuBarController: NSObject {
             // contextual-menu tracking. A short settle time is more reliable for right clicks.
             try? await Task.sleep(for: .milliseconds(220))
 
+            guard !self.snapshotter.isWindowHorizontallyOffscreen(snapshot.id) else {
+                self.hideNativeItems()
+                let alert = NSAlert()
+                alert.messageText = "该图标仍在屏幕外"
+                alert.informativeText = "请先在“调整菜单显隐”中把“\(snapshot.label)”拖到蓝线左侧，再进行点击。"
+                alert.runModal()
+                return
+            }
+
             let didClick = await self.snapshotter.click(
-                windowID: windowID,
+                windowID: snapshot.id,
                 mouseButton: mouseButton,
                 promptingForAccessibility: true
             )

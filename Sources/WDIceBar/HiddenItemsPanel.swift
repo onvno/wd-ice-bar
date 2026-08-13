@@ -2,7 +2,7 @@ import AppKit
 
 final class HiddenItemsPanel: NSPanel {
     private var closeHandler: (() -> Void)?
-    private var activateHandler: ((CGWindowID, CGMouseButton) -> Void)?
+    private var activateHandler: ((StatusItemSnapshot, CGMouseButton) -> Void)?
     private weak var arrangementEditor: ArrangementEditorView?
     private var isDismissing = false
 
@@ -23,7 +23,7 @@ final class HiddenItemsPanel: NSPanel {
     func show(
         snapshots: [StatusItemSnapshot],
         onClose: @escaping () -> Void,
-        onActivate: @escaping (CGWindowID, CGMouseButton) -> Void
+        onActivate: @escaping (StatusItemSnapshot, CGMouseButton) -> Void
     ) {
         closeHandler = onClose
         activateHandler = onActivate
@@ -127,7 +127,9 @@ final class HiddenItemsPanel: NSPanel {
                 let button = SnapshotButton(image: snapshot.image, target: self, action: #selector(activateSnapshot))
                 button.imageScaling = .scaleProportionallyDown
                 button.setFrameSize(CGSize(width: max(20, snapshot.image.size.width), height: 24))
-                button.toolTip = snapshot.label
+                button.toolTip = snapshot.isOffscreen
+                    ? "\(snapshot.label)；当前在屏幕外，请先通过“调整菜单显隐”移到显示侧"
+                    : snapshot.label
                 button.bezelStyle = .regularSquare
                 button.isBordered = false
                 // These are captured pixels, not template symbols. Preserve their original
@@ -137,7 +139,7 @@ final class HiddenItemsPanel: NSPanel {
                 button.wantsLayer = true
                 button.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.16).cgColor
                 button.layer?.cornerRadius = 6
-                button.identifier = NSUserInterfaceItemIdentifier(String(snapshot.id))
+                button.snapshot = snapshot
                 button.rightMouseUpHandler = { [weak self, weak button] in
                     guard let self, let button else { return }
                     self.forwardSnapshotActivation(button, mouseButton: .right)
@@ -148,17 +150,17 @@ final class HiddenItemsPanel: NSPanel {
         return effect
     }
 
-    @objc private func activateSnapshot(_ sender: NSButton) {
+    @objc private func activateSnapshot(_ sender: SnapshotButton) {
         forwardSnapshotActivation(sender, mouseButton: .left)
     }
 
-    private func forwardSnapshotActivation(_ sender: NSButton, mouseButton: CGMouseButton) {
-        guard let identifier = sender.identifier?.rawValue, let id = UInt32(identifier) else { return }
+    private func forwardSnapshotActivation(_ sender: SnapshotButton, mouseButton: CGMouseButton) {
+        guard let snapshot = sender.snapshot else { return }
         let handler = activateHandler
         closeHandler = nil
         activateHandler = nil
         super.close()
-        handler?(id, mouseButton)
+        handler?(snapshot, mouseButton)
     }
 
     @objc private func requestScreenRecording() {
@@ -206,6 +208,7 @@ final class HiddenItemsPanel: NSPanel {
 /// NSButton's default action routing is optimized for primary clicks. Capture secondary clicks
 /// directly so a nonactivating panel cannot swallow them before they reach the forwarding logic.
 private final class SnapshotButton: NSButton {
+    var snapshot: StatusItemSnapshot?
     var rightMouseUpHandler: (() -> Void)?
 
     override func resetCursorRects() {

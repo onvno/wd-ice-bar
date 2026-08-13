@@ -9,6 +9,8 @@ struct StatusItemSnapshot: Identifiable {
     let key: String
     let image: NSImage
     let label: String
+    let usesFallbackImage: Bool
+    let isOffscreen: Bool
 }
 
 /// Reads status-item windows through the same WindowServer API Ice uses. This is intentionally
@@ -53,24 +55,7 @@ final class StatusItemSnapshotter {
                 return window.frame.maxX <= maximumX
             }
             .sorted { $0.frame.minX < $1.frame.minX }
-            .compactMap { window in
-                guard let image = CGWindowListCreateImage(
-                    .null,
-                    .optionIncludingWindow,
-                    window.id,
-                    [.boundsIgnoreFraming, .bestResolution]
-                ), hasMeaningfulIconPixels(image) else {
-                    return nil
-                }
-
-                let size = CGSize(width: image.width / 2, height: image.height / 2)
-                return StatusItemSnapshot(
-                    id: window.id,
-                    key: "\(window.ownerPID)|\(window.ownerName)|\(window.title)",
-                    image: NSImage(cgImage: image, size: size),
-                    label: window.title.isEmpty ? window.ownerName : window.title
-                )
-            }
+            .compactMap(snapshot(for:))
     }
 
     /// The private menu-bar window list can include transparent container windows and solid
@@ -129,6 +114,95 @@ final class StatusItemSnapshotter {
         capture(excluding: ownPID, excludingTitles: excludingTitles, maximumX: nil)
     }
 
+    /// Returns status items WindowServer knows about but macOS has already laid out beyond the
+    /// display's horizontal bounds. These do not belong to the normal visible group, yet they
+    /// can still be shown in wd-ice-bar and later moved back through the layout editor.
+    func captureOffscreenCandidates(excluding ownPID: pid_t, excludingTitles: Set<String>) -> [StatusItemSnapshot] {
+        statusItemWindows()
+            .filter { window in
+                window.ownerPID != ownPID
+                    && !excludingTitles.contains(window.title)
+                    && isUserMenuBarItem(window)
+                    && isHorizontallyOffscreen(window.frame)
+            }
+            .sorted { $0.frame.minX < $1.frame.minX }
+            .compactMap(snapshot(for:))
+    }
+
+    private func snapshot(for window: StatusWindow) -> StatusItemSnapshot? {
+        let label = window.title.isEmpty ? window.ownerName : window.title
+        if let image = CGWindowListCreateImage(
+            .null,
+            .optionIncludingWindow,
+            window.id,
+            [.boundsIgnoreFraming, .bestResolution]
+        ), hasMeaningfulIconPixels(image) {
+            let size = CGSize(width: image.width / 2, height: image.height / 2)
+            return StatusItemSnapshot(
+                id: window.id,
+                key: "\(window.ownerPID)|\(window.ownerName)|\(window.title)",
+                image: NSImage(cgImage: image, size: size),
+                label: label,
+                usesFallbackImage: false,
+                isOffscreen: isHorizontallyOffscreen(window.frame)
+            )
+        }
+
+        // Some status-item hosts keep their window and event target alive after their backing
+        // image is no longer capturable. Preserve that item with a title initial instead of
+        // creating an empty gap in the shelf. Restrict the fallback to icon-sized windows with
+        // a usable identity so transparent container views remain excluded.
+        guard isPlausibleFallbackStatusItem(window), let image = fallbackImage(for: label) else {
+            return nil
+        }
+        return StatusItemSnapshot(
+            id: window.id,
+            key: "\(window.ownerPID)|\(window.ownerName)|\(window.title)",
+            image: image,
+            label: "\(label)（未捕捉到图标）",
+            usesFallbackImage: true,
+            isOffscreen: isHorizontallyOffscreen(window.frame)
+        )
+    }
+
+    private func isPlausibleFallbackStatusItem(_ window: StatusWindow) -> Bool {
+        guard !window.title.isEmpty || !window.ownerName.isEmpty else { return false }
+        return window.frame.width >= 8
+            && window.frame.width <= 96
+            && window.frame.height >= 12
+            && window.frame.height <= 48
+    }
+
+    private func fallbackImage(for label: String) -> NSImage? {
+        let character = label.trimmingCharacters(in: .whitespacesAndNewlines).first ?? "?"
+        let image = NSImage(size: CGSize(width: 24, height: 24))
+        image.lockFocus()
+        defer { image.unlockFocus() }
+
+        let seed = label.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) & 0x7fff_ffff }
+        let hue = CGFloat(seed % 360) / 360
+        NSColor(calibratedHue: hue, saturation: 0.48, brightness: 0.80, alpha: 1).setFill()
+        NSBezierPath(roundedRect: NSRect(x: 1, y: 1, width: 22, height: 22), xRadius: 6, yRadius: 6).fill()
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+            .foregroundColor: NSColor.white,
+            .paragraphStyle: paragraph,
+        ]
+        String(character).draw(in: NSRect(x: 1, y: 4, width: 22, height: 16), withAttributes: attributes)
+        return image
+    }
+
+    private func isHorizontallyOffscreen(_ frame: CGRect) -> Bool {
+        let screenRanges = NSScreen.screens.map { $0.frame.minX...$0.frame.maxX }
+        guard !screenRanges.isEmpty else { return false }
+        return !screenRanges.contains { range in
+            frame.maxX >= range.lowerBound && frame.minX <= range.upperBound
+        }
+    }
+
     /// Moves a real status item immediately beside another real item. It is deliberately
     /// transactional: reports the precise failed stage unless WindowServer confirms adjacency.
     @discardableResult
@@ -183,6 +257,11 @@ final class StatusItemSnapshotter {
             return nil
         }
         return itemFrame.minX >= dividerFrame.maxX - 1
+    }
+
+    func isWindowHorizontallyOffscreen(_ windowID: CGWindowID) -> Bool {
+        guard let frame = windowFrame(for: windowID) else { return true }
+        return isHorizontallyOffscreen(frame)
     }
 
     /// Reveals an original status item briefly, then sends it the same mouse click a user would.
