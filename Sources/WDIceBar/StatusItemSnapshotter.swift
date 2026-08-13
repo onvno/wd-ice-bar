@@ -130,7 +130,7 @@ final class StatusItemSnapshotter {
     }
 
     private func snapshot(for window: StatusWindow) -> StatusItemSnapshot? {
-        let label = window.title.isEmpty ? window.ownerName : window.title
+        let label = displayLabel(for: window)
         if let image = CGWindowListCreateImage(
             .null,
             .optionIncludingWindow,
@@ -171,6 +171,29 @@ final class StatusItemSnapshotter {
             && window.frame.width <= 96
             && window.frame.height >= 12
             && window.frame.height <= 48
+    }
+
+    /// WindowServer frequently assigns untitled status items implementation names such as
+    /// `Item-0`. They are not user-facing titles and made every fallback icon look like `I`.
+    /// Prefer the owning app's localized name for those entries.
+    private func displayLabel(for window: StatusWindow) -> String {
+        let title = window.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, !isGeneratedWindowTitle(title) else {
+            return NSRunningApplication(processIdentifier: window.ownerPID)?.localizedName
+                ?? window.ownerName
+        }
+        return title
+    }
+
+    private func isGeneratedWindowTitle(_ title: String) -> Bool {
+        let components = title.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+        guard components.count == 2,
+              components[0].caseInsensitiveCompare("item") == .orderedSame,
+              Int(components[1]) != nil
+        else {
+            return false
+        }
+        return true
     }
 
     private func fallbackImage(for label: String) -> NSImage? {
