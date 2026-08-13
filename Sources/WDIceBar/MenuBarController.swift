@@ -465,6 +465,7 @@ final class MenuBarController: NSObject {
             let didClick = await self.snapshotter.click(
                 windowID: snapshot.id,
                 mouseButton: mouseButton,
+                routeToTargetProcess: snapshot.isOffscreen,
                 promptingForAccessibility: true
             )
             if mouseButton == .right, didClick {

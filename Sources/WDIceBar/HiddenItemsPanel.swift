@@ -5,6 +5,13 @@ final class HiddenItemsPanel: NSPanel {
     private var activateHandler: ((StatusItemSnapshot, CGMouseButton) -> Void)?
     private weak var arrangementEditor: ArrangementEditorView?
     private var isDismissing = false
+    private let hoverPanel = NSPanel(
+        contentRect: .zero,
+        styleMask: [.borderless, .nonactivatingPanel],
+        backing: .buffered,
+        defer: false
+    )
+    private let hoverLabel = NSTextField(labelWithString: "")
 
     init() {
         super.init(
@@ -18,6 +25,31 @@ final class HiddenItemsPanel: NSPanel {
         backgroundColor = .clear
         hasShadow = true
         collectionBehavior = [.fullScreenAuxiliary, .ignoresCycle, .moveToActiveSpace]
+
+        hoverPanel.level = .mainMenu + 2
+        hoverPanel.backgroundColor = .clear
+        hoverPanel.hasShadow = true
+        hoverPanel.collectionBehavior = [.fullScreenAuxiliary, .ignoresCycle, .moveToActiveSpace]
+        let hoverContent = NSVisualEffectView()
+        hoverContent.material = .popover
+        hoverContent.blendingMode = .withinWindow
+        hoverContent.state = .active
+        hoverContent.appearance = NSAppearance(named: .darkAqua)
+        hoverContent.wantsLayer = true
+        hoverContent.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.88).cgColor
+        hoverContent.layer?.cornerRadius = 6
+        hoverLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        hoverLabel.textColor = .white
+        hoverLabel.lineBreakMode = .byTruncatingTail
+        hoverLabel.translatesAutoresizingMaskIntoConstraints = false
+        hoverContent.addSubview(hoverLabel)
+        NSLayoutConstraint.activate([
+            hoverLabel.leadingAnchor.constraint(equalTo: hoverContent.leadingAnchor, constant: 8),
+            hoverLabel.trailingAnchor.constraint(equalTo: hoverContent.trailingAnchor, constant: -8),
+            hoverLabel.topAnchor.constraint(equalTo: hoverContent.topAnchor, constant: 4),
+            hoverLabel.bottomAnchor.constraint(equalTo: hoverContent.bottomAnchor, constant: -4),
+        ])
+        hoverPanel.contentView = hoverContent
     }
 
     func show(
@@ -27,6 +59,7 @@ final class HiddenItemsPanel: NSPanel {
     ) {
         closeHandler = onClose
         activateHandler = onActivate
+        hideHoverLabel()
         contentView = makeContent(snapshots: snapshots)
         positionAtRightEdge()
         alphaValue = 0
@@ -42,6 +75,7 @@ final class HiddenItemsPanel: NSPanel {
     ) {
         closeHandler = onClose
         activateHandler = nil
+        hideHoverLabel()
 
         let effect = makeEffectView()
         let editor = ArrangementEditorView(snapshots: snapshots, visibleCount: visibleCount, onCommit: onCommit)
@@ -67,6 +101,7 @@ final class HiddenItemsPanel: NSPanel {
         closeHandler = nil
         activateHandler = nil
         arrangementEditor = nil
+        hideHoverLabel()
         orderOut(nil)
         alphaValue = 1
     }
@@ -127,9 +162,7 @@ final class HiddenItemsPanel: NSPanel {
                 let button = SnapshotButton(image: snapshot.image, target: self, action: #selector(activateSnapshot))
                 button.imageScaling = .scaleProportionallyDown
                 button.setFrameSize(CGSize(width: max(20, snapshot.image.size.width), height: 24))
-                button.toolTip = snapshot.isOffscreen
-                    ? "\(snapshot.label)；当前在屏幕外，请先通过“调整菜单显隐”移到显示侧"
-                    : snapshot.label
+                button.toolTip = nil
                 button.bezelStyle = .regularSquare
                 button.isBordered = false
                 // These are captured pixels, not template symbols. Preserve their original
@@ -140,6 +173,14 @@ final class HiddenItemsPanel: NSPanel {
                 button.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.16).cgColor
                 button.layer?.cornerRadius = 6
                 button.snapshot = snapshot
+                let hoverText = snapshot.isOffscreen
+                    ? "\(snapshot.label) · 请先移到显示侧"
+                    : snapshot.label
+                button.hoverEnteredHandler = { [weak self, weak button] in
+                    guard let self, let button else { return }
+                    self.showHoverLabel(hoverText, for: button)
+                }
+                button.hoverExitedHandler = { [weak self] in self?.hideHoverLabel() }
                 button.rightMouseUpHandler = { [weak self, weak button] in
                     guard let self, let button else { return }
                     self.forwardSnapshotActivation(button, mouseButton: .right)
@@ -157,6 +198,7 @@ final class HiddenItemsPanel: NSPanel {
     private func forwardSnapshotActivation(_ sender: SnapshotButton, mouseButton: CGMouseButton) {
         guard let snapshot = sender.snapshot else { return }
         let handler = activateHandler
+        hideHoverLabel()
         closeHandler = nil
         activateHandler = nil
         super.close()
@@ -181,6 +223,23 @@ final class HiddenItemsPanel: NSPanel {
         effect.layer?.cornerRadius = 11
         effect.layer?.masksToBounds = true
         return effect
+    }
+
+    private func showHoverLabel(_ text: String, for button: NSView) {
+        guard let buttonWindow = button.window else { return }
+        hoverLabel.stringValue = text
+        let contentSize = hoverLabel.fittingSize
+        let size = CGSize(width: min(max(contentSize.width + 16, 64), 260), height: contentSize.height + 8)
+        let buttonFrame = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        let screen = buttonWindow.screen ?? NSScreen.main
+        let x = min(max(buttonFrame.midX - size.width / 2, screen?.visibleFrame.minX ?? 0), (screen?.visibleFrame.maxX ?? buttonFrame.maxX) - size.width)
+        let y = buttonFrame.maxY + 4
+        hoverPanel.setFrame(CGRect(x: x, y: y, width: size.width, height: size.height), display: true)
+        hoverPanel.orderFrontRegardless()
+    }
+
+    private func hideHoverLabel() {
+        hoverPanel.orderOut(nil)
     }
 
     private func positionAtRightEdge() {
@@ -210,6 +269,9 @@ final class HiddenItemsPanel: NSPanel {
 private final class SnapshotButton: NSButton {
     var snapshot: StatusItemSnapshot?
     var rightMouseUpHandler: (() -> Void)?
+    var hoverEnteredHandler: (() -> Void)?
+    var hoverExitedHandler: (() -> Void)?
+    private var hoverTrackingArea: NSTrackingArea?
 
     override func resetCursorRects() {
         super.resetCursorRects()
@@ -223,5 +285,26 @@ private final class SnapshotButton: NSButton {
 
     override func rightMouseUp(with event: NSEvent) {
         rightMouseUpHandler?()
+    }
+
+    override func updateTrackingAreas() {
+        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        hoverTrackingArea = area
+        super.updateTrackingAreas()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        hoverEnteredHandler?()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hoverExitedHandler?()
     }
 }

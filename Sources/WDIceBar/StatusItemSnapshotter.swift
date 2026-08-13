@@ -268,7 +268,12 @@ final class StatusItemSnapshotter {
     /// macOS requires Accessibility permission for synthesized input, so the first click can
     /// display the system permission prompt instead of silently doing nothing.
     @discardableResult
-    func click(windowID: CGWindowID, mouseButton: CGMouseButton, promptingForAccessibility: Bool) async -> Bool {
+    func click(
+        windowID: CGWindowID,
+        mouseButton: CGMouseButton,
+        routeToTargetProcess: Bool,
+        promptingForAccessibility: Bool
+    ) async -> Bool {
         guard accessibilityIsTrusted(prompting: promptingForAccessibility),
               let frame = windowFrame(for: windowID),
               let source = CGEventSource(stateID: .hidSystemState)
@@ -277,7 +282,7 @@ final class StatusItemSnapshotter {
         }
 
         let point = CGPoint(x: frame.midX, y: frame.midY)
-        if mouseButton == .right,
+        if (mouseButton == .right || routeToTargetProcess),
            let item = statusWindow(for: windowID),
            let mouseDown = menuBarEvent(
                type: .rightMouseDown,
@@ -296,8 +301,9 @@ final class StatusItemSnapshotter {
                flags: []
            )
         {
-            // Status-item context menus are stricter than primary clicks: route the event with
-            // the actual target WindowID and owner PID, matching the proven drag route.
+            // Context menus and items returning from off-screen are stricter than ordinary
+            // clicks: route them with the real WindowID/PID so another top-level window (such
+            // as a Dynamic-Island-style overlay) cannot receive the coordinate click first.
             guard await eventRouter.route(mouseDown, to: item.ownerPID) == .delivered else { return false }
             return await eventRouter.route(mouseUp, to: item.ownerPID) == .delivered
         }
@@ -416,7 +422,7 @@ final class StatusItemSnapshotter {
             mouseEventSource: source,
             mouseType: type,
             mouseCursorPosition: location,
-            mouseButton: .left
+            mouseButton: type == .rightMouseDown || type == .rightMouseUp ? .right : .left
         ) else {
             return nil
         }
