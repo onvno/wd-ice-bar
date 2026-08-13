@@ -10,7 +10,9 @@ APP_DIR="$ROOT_DIR/build/wd-ice-bar.app"
 # certificate unless the caller explicitly specifies another one.
 SIGNING_IDENTITY="${WD_ICE_BAR_SIGNING_IDENTITY:-}"
 if [[ -z "$SIGNING_IDENTITY" ]]; then
-  SIGNING_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development:.*\)"/\1/p' | head -n 1)"
+  # Use the certificate SHA-1, not its display name. Keychains can contain multiple valid
+  # Apple Development certificates with the same name, which makes codesign reject a name.
+  SIGNING_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/^[[:space:]]*[0-9][0-9]*) \([0-9A-F]*\) "Apple Development:.*/\1/p' | head -n 1)"
 fi
 
 if [[ -z "$SIGNING_IDENTITY" ]]; then

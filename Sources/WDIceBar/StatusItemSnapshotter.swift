@@ -59,7 +59,7 @@ final class StatusItemSnapshotter {
                     .optionIncludingWindow,
                     window.id,
                     [.boundsIgnoreFraming, .bestResolution]
-                ) else {
+                ), hasMeaningfulIconPixels(image) else {
                     return nil
                 }
 
@@ -71,6 +71,56 @@ final class StatusItemSnapshotter {
                     label: window.title.isEmpty ? window.ownerName : window.title
                 )
             }
+    }
+
+    /// The private menu-bar window list can include transparent container windows and solid
+    /// backing views alongside actual status-item images. Rendering those entries created a
+    /// long row of empty gray placeholders. Keep only captures with visible, non-flat content.
+    private func hasMeaningfulIconPixels(_ image: CGImage) -> Bool {
+        let width = min(image.width, 96)
+        let height = min(image.height, 48)
+        guard width > 0, height > 0 else { return false }
+
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+        guard let context = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: bitmapInfo
+        ) else {
+            // If macOS cannot normalize a valid capture, keep it rather than hide a real item.
+            return true
+        }
+
+        context.interpolationQuality = .none
+        context.clear(CGRect(x: 0, y: 0, width: width, height: height))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        var visibleCount = 0
+        var minimumLuminance = UInt8.max
+        var maximumLuminance = UInt8.min
+        for offset in stride(from: 0, to: pixels.count, by: 4) {
+            let alpha = pixels[offset + 3]
+            guard alpha > 12 else { continue }
+            visibleCount += 1
+            let red = Int(pixels[offset])
+            let green = Int(pixels[offset + 1])
+            let blue = Int(pixels[offset + 2])
+            let luminanceValue = (77 * red + 150 * green + 29 * blue) / 256
+            let luminance = UInt8(luminanceValue)
+            minimumLuminance = min(minimumLuminance, luminance)
+            maximumLuminance = max(maximumLuminance, luminance)
+        }
+
+        let coverage = Double(visibleCount) / Double(width * height)
+        guard coverage >= 0.015 else { return false }
+        // A fully opaque, near-uniform rectangle is a host/background view, not an icon. Do
+        // not discard ordinary sparse icons, including black template icons with alpha.
+        return !(coverage > 0.92 && maximumLuminance - minimumLuminance < 12)
     }
 
     /// Captures every third-party candidate, including items currently outside the visible menu
