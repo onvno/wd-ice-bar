@@ -50,6 +50,7 @@ final class MenuBarController: NSObject {
     private let triggerItem: NSStatusItem
     private let snapshotter = StatusItemSnapshotter()
     private let panel = HiddenItemsPanel()
+    private let exclusions = StatusItemExclusions()
     private var cachedSnapshots: [StatusItemSnapshot] = []
     private var outsideClickMonitor: Any?
     private var nativeContextMenuIsOpen = false
@@ -149,6 +150,11 @@ final class MenuBarController: NSObject {
         )
         refresh.target = self
         menu.addItem(refresh)
+
+        let restore = NSMenuItem(title: "恢复已移除的虚拟菜单项", action: #selector(restoreExcludedItems), keyEquivalent: "")
+        restore.target = self
+        restore.isEnabled = exclusions.hasExclusions
+        menu.addItem(restore)
 
         let icons = NSMenu(title: "更换图标")
         for choice in IconChoice.allCases {
@@ -270,9 +276,25 @@ final class MenuBarController: NSObject {
         state = .hidden
     }
 
-    private func showPanel() {
+    private func showPanel(refreshingEmptyCache: Bool = true) {
+        if cachedSnapshots.isEmpty, refreshingEmptyCache {
+            // First-run WindowServer settling or a newly granted capture permission can
+            // leave the startup cache empty. Retry once with real items restored.
+            dividerItem.length = 1
+            state = .shown
+            updateTriggerIcon(isHidden: false)
+            startOutsideClickMonitor()
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(220)) { [weak self] in
+                guard let self, self.state == .shown else { return }
+                self.refreshSnapshotCache()
+                self.dividerItem.length = 10_000
+                self.showPanel(refreshingEmptyCache: false)
+            }
+            return
+        }
         panel.show(
-            snapshots: cachedSnapshots,
+            snapshots: cachedSnapshots.filter { !exclusions.contains($0) },
+            onRemove: { [weak self] snapshot in self?.removeSnapshot(snapshot) },
             onClose: { [weak self] in self?.hideNativeItems() },
             onActivate: { [weak self] windowID, mouseButton in self?.activateNativeItem(windowID, mouseButton: mouseButton) }
         )
@@ -292,7 +314,7 @@ final class MenuBarController: NSObject {
         let allCandidates = snapshotter.captureAllCandidates(
             excluding: getpid(),
             excludingTitles: [ItemName.divider, ItemName.trigger]
-        )
+        ).filter { !exclusions.contains($0) }
         guard !allCandidates.isEmpty else {
             hideNativeItems()
             return
@@ -306,6 +328,7 @@ final class MenuBarController: NSObject {
         panel.showArrangement(
             snapshots: visible + hidden,
             visibleCount: visible.count,
+            onRemove: { [weak self] snapshot in self?.removeSnapshot(snapshot) },
             onCommit: { [weak self] snapshots, visibleCount in
                 self?.applyArrangement(snapshots, visibleCount: visibleCount)
             },
@@ -422,13 +445,40 @@ final class MenuBarController: NSObject {
     }
 
     private func refreshSnapshotCache() {
+        // A missing AppKit window used to pass nil and capture the entire menu bar.
+        // Read the boundary from the same WindowServer coordinate space as the items.
+        guard let maximumX = snapshotter.hiddenBoundaryX(titled: ItemName.divider) else { return }
         let snapshots = snapshotter.capture(
             excluding: getpid(),
             excludingTitles: [ItemName.divider, ItemName.trigger],
-            maximumX: dividerItem.button?.window?.frame.maxX
+            maximumX: maximumX
         )
+        // Preserve a cache only for a genuinely empty WindowServer scan. An exclusion
+        // that removes the final candidate must also be allowed to empty the shelf.
         if !snapshots.isEmpty {
-            cachedSnapshots = snapshots
+            cachedSnapshots = snapshots.filter { !exclusions.contains($0) }
+        } else {
+            cachedSnapshots.removeAll { exclusions.contains($0) }
+        }
+    }
+
+    private func removeSnapshot(_ snapshot: StatusItemSnapshot) {
+        guard !isApplyingLayout else { return }
+        exclusions.insert(snapshot)
+        cachedSnapshots.removeAll { exclusions.contains($0) }
+        if state == .arranging {
+            presentArrangementEditor()
+        } else if state == .shown {
+            showPanel()
+        }
+    }
+
+    @objc private func restoreExcludedItems() {
+        exclusions.reset()
+        if state == .arranging {
+            presentArrangementEditor()
+        } else {
+            refreshHiddenItems()
         }
     }
 

@@ -12,5 +12,6 @@ let package = Package(
             name: "WDIceBar",
             path: "Sources/WDIceBar"
         ),
+        .testTarget(name: "WDIceBarTests", dependencies: ["WDIceBar"]),
     ]
 )

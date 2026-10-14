@@ -3,6 +3,7 @@ import AppKit
 final class HiddenItemsPanel: NSPanel {
     private var closeHandler: (() -> Void)?
     private var activateHandler: ((CGWindowID, CGMouseButton) -> Void)?
+    private var removeHandler: ((StatusItemSnapshot) -> Void)?
     private weak var arrangementEditor: ArrangementEditorView?
     private var isDismissing = false
 
@@ -22,10 +23,12 @@ final class HiddenItemsPanel: NSPanel {
 
     func show(
         snapshots: [StatusItemSnapshot],
+        onRemove: @escaping (StatusItemSnapshot) -> Void,
         onClose: @escaping () -> Void,
         onActivate: @escaping (CGWindowID, CGMouseButton) -> Void
     ) {
         closeHandler = onClose
+        removeHandler = onRemove
         activateHandler = onActivate
         contentView = makeContent(snapshots: snapshots)
         positionAtRightEdge()
@@ -37,6 +40,7 @@ final class HiddenItemsPanel: NSPanel {
     func showArrangement(
         snapshots: [StatusItemSnapshot],
         visibleCount: Int,
+        onRemove: @escaping (StatusItemSnapshot) -> Void,
         onCommit: @escaping ([StatusItemSnapshot], Int) -> Void,
         onClose: @escaping () -> Void
     ) {
@@ -44,7 +48,7 @@ final class HiddenItemsPanel: NSPanel {
         activateHandler = nil
 
         let effect = makeEffectView()
-        let editor = ArrangementEditorView(snapshots: snapshots, visibleCount: visibleCount, onCommit: onCommit)
+        let editor = ArrangementEditorView(snapshots: snapshots, visibleCount: visibleCount, onRemove: onRemove, onCommit: onCommit)
         arrangementEditor = editor
         editor.translatesAutoresizingMaskIntoConstraints = false
         effect.addSubview(editor)
@@ -114,20 +118,22 @@ final class HiddenItemsPanel: NSPanel {
         ])
 
         if snapshots.isEmpty {
-            let label = NSTextField(labelWithString: "未捕捉到隐藏图标。")
+            let label = NSTextField(labelWithString: "没有可展示的隐藏图标。")
             label.textColor = .secondaryLabelColor
             label.font = .systemFont(ofSize: 12)
             stack.addArrangedSubview(label)
 
-            let permissionButton = NSButton(title: "允许屏幕录制", target: self, action: #selector(requestScreenRecording))
-            permissionButton.bezelStyle = .inline
-            stack.addArrangedSubview(permissionButton)
+            if !ScreenCapturePermission.isGranted {
+                let permissionButton = NSButton(title: "允许屏幕录制", target: self, action: #selector(requestScreenRecording))
+                permissionButton.bezelStyle = .inline
+                stack.addArrangedSubview(permissionButton)
+            }
         } else {
             for snapshot in snapshots {
                 let button = SnapshotButton(image: snapshot.image, target: self, action: #selector(activateSnapshot))
                 button.imageScaling = .scaleProportionallyDown
                 button.setFrameSize(CGSize(width: max(20, snapshot.image.size.width), height: 24))
-                button.toolTip = snapshot.label
+                button.toolTip = "\(snapshot.label) · 右键可移除或打开原生菜单"
                 button.bezelStyle = .regularSquare
                 button.isBordered = false
                 // These are captured pixels, not template symbols. Preserve their original
@@ -138,9 +144,17 @@ final class HiddenItemsPanel: NSPanel {
                 button.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.16).cgColor
                 button.layer?.cornerRadius = 6
                 button.identifier = NSUserInterfaceItemIdentifier(String(snapshot.id))
-                button.rightMouseUpHandler = { [weak self, weak button] in
+                button.rightMouseUpHandler = { [weak self, weak button] event in
                     guard let self, let button else { return }
-                    self.forwardSnapshotActivation(button, mouseButton: .right)
+                    let menu = NSMenu()
+                    menu.addItem(SnapshotMenuAction(title: "打开原生右键菜单") { [weak self, weak button] in
+                        guard let self, let button else { return }
+                        self.forwardSnapshotActivation(button, mouseButton: .right)
+                    })
+                    menu.addItem(SnapshotMenuAction(title: "从虚拟菜单移除") { [weak self] in
+                        self?.removeHandler?(snapshot)
+                    })
+                    NSMenu.popUpContextMenu(menu, with: event, for: button)
                 }
                 stack.addArrangedSubview(button)
             }
@@ -206,7 +220,7 @@ final class HiddenItemsPanel: NSPanel {
 /// NSButton's default action routing is optimized for primary clicks. Capture secondary clicks
 /// directly so a nonactivating panel cannot swallow them before they reach the forwarding logic.
 private final class SnapshotButton: NSButton {
-    var rightMouseUpHandler: (() -> Void)?
+    var rightMouseUpHandler: ((NSEvent) -> Void)?
 
     override func resetCursorRects() {
         super.resetCursorRects()
@@ -219,6 +233,6 @@ private final class SnapshotButton: NSButton {
     }
 
     override func rightMouseUp(with event: NSEvent) {
-        rightMouseUpHandler?()
+        rightMouseUpHandler?(event)
     }
 }

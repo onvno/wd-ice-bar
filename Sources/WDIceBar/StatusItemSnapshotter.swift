@@ -7,6 +7,8 @@ struct StatusItemSnapshot: Identifiable {
     /// Best-effort identity for the current menu-bar session. `windowID` is the authoritative
     /// key while the item exists; this value helps preserve an editor selection after a refresh.
     let key: String
+    /// Bundle ID and window title survive process restarts; unnamed items are session-only.
+    let exclusionKey: String?
     let image: NSImage
     let label: String
 }
@@ -47,7 +49,7 @@ final class StatusItemSnapshotter {
                     return false
                 }
 
-                guard isUserMenuBarItem(window) else { return false }
+                guard StatusItemWindowCatalog.isUserMenuBarItem(window) else { return false }
 
                 guard let maximumX else { return true }
                 return window.frame.maxX <= maximumX
@@ -66,9 +68,10 @@ final class StatusItemSnapshotter {
                 let size = CGSize(width: image.width / 2, height: image.height / 2)
                 return StatusItemSnapshot(
                     id: window.id,
-                    key: "\(window.ownerPID)|\(window.ownerName)|\(window.title)",
+                    key: "\(window.ownerPID)|\(window.itemBundleID ?? window.ownerName)|\(window.title)",
+                    exclusionKey: window.exclusionKey,
                     image: NSImage(cgImage: image, size: size),
-                    label: window.title.isEmpty ? window.ownerName : window.title
+                    label: itemLabel(for: window)
                 )
             }
     }
@@ -178,6 +181,10 @@ final class StatusItemSnapshotter {
         statusItemWindows().first { $0.title == title }?.id
     }
 
+    func hiddenBoundaryX(titled title: String) -> CGFloat? {
+        statusItemWindows().first { $0.title == title }?.frame.minX
+    }
+
     func isWindow(_ windowID: CGWindowID, toRightOf dividerID: CGWindowID) -> Bool? {
         guard let itemFrame = windowFrame(for: windowID), let dividerFrame = windowFrame(for: dividerID) else {
             return nil
@@ -251,7 +258,7 @@ final class StatusItemSnapshotter {
             return []
         }
 
-        return descriptions.compactMap { description in
+        let windows = descriptions.compactMap { description -> StatusWindow? in
             guard
                 let id = description[kCGWindowNumber] as? CGWindowID,
                 let ownerPID = description[kCGWindowOwnerPID] as? pid_t,
@@ -266,8 +273,18 @@ final class StatusItemSnapshotter {
                 return nil
             }
             let title = description[kCGWindowName] as? String ?? ""
-            return StatusWindow(id: id, ownerPID: ownerPID, ownerName: ownerName, title: title, frame: frame)
+            return StatusWindow(id: id, ownerPID: ownerPID, ownerName: ownerName,
+                                ownerBundleID: NSRunningApplication(processIdentifier: ownerPID)?.bundleIdentifier,
+                                title: title, frame: frame)
         }
+        return StatusItemWindowCatalog.realWindows(windows, screenWidths: NSScreen.screens.map { $0.frame.width })
+    }
+
+    private func itemLabel(for window: StatusWindow) -> String {
+        if let bundleID = window.itemBundleID {
+            return NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.localizedName ?? bundleID
+        }
+        return window.title.isEmpty ? window.ownerName : window.title
     }
 
     private func statusWindow(for windowID: CGWindowID) -> StatusWindow? {
@@ -391,18 +408,6 @@ final class StatusItemSnapshotter {
         return onRight ? itemIndex == targetIndex + 1 : targetIndex == itemIndex + 1
     }
 
-    /// System-owned controls are neither reliably movable nor part of wd-ice-bar's scope.
-    /// Filtering them before the editor is important: otherwise the date and Control Center can
-    /// accidentally be treated as ordinary app icons.
-    private func isUserMenuBarItem(_ window: StatusWindow) -> Bool {
-        let systemOwners: Set<String> = ["Control Center", "SystemUIServer", "Window Server"]
-        guard !systemOwners.contains(window.ownerName) else { return false }
-        let reservedTitles: Set<String> = ["Clock", "BentoBox", "Siri", "AudioVideoModule", "FaceTime", "MusicRecognition"]
-        // System modules expose implementation-specific suffixes such as "BentoBox-0". They
-        // can be captured as status-level windows but do not accept status-item reordering.
-        return !reservedTitles.contains { window.title == $0 || window.title.hasPrefix("\($0)-") }
-    }
-
     private func privateMenuBarWindowIDs() -> [CGWindowID] {
         var count: Int32 = 0
         guard CGSGetWindowCount(CGSMainConnectionID(), 0, &count) == .success, count > 0 else {
@@ -449,14 +454,6 @@ private extension CGEventFilterMask {
         .permitLocalKeyboardEvents,
         .permitSystemDefinedEvents,
     ]
-}
-
-private struct StatusWindow {
-    let id: CGWindowID
-    let ownerPID: pid_t
-    let ownerName: String
-    let title: String
-    let frame: CGRect
 }
 
 enum ScreenCapturePermission {
