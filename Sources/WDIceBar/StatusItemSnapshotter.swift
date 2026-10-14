@@ -11,6 +11,8 @@ struct StatusItemSnapshot: Identifiable {
     let exclusionKey: String?
     let image: NSImage
     let label: String
+    var usesApplicationIcon = false
+    var usesUnavailableImage = false
 }
 
 /// Reads status-item windows through the same WindowServer API Ice uses. This is intentionally
@@ -23,6 +25,7 @@ final class StatusItemSnapshotter {
         case sourceOrTargetMissing
         case eventRouting(MenuBarEventRouter.Result)
         case positionNotConfirmed
+        case userInputBusy
 
         var description: String {
             switch self {
@@ -31,48 +34,91 @@ final class StatusItemSnapshotter {
             case .sourceOrTargetMissing: "移动期间找不到源图标或分隔标记"
             case .eventRouting(let result): result.description
             case .positionNotConfirmed: "事件已送达，但 1.5 秒内未确认到新的相邻位置"
+            case .userInputBusy: "检测到鼠标按住或持续移动，暂不自动拖拽，请松开后重试"
             }
         }
     }
 
     private let eventRouter = MenuBarEventRouter()
+    var testItemImages: [String: NSImage] = [:]
+    private var rememberedWindows: [CGWindowID: StatusWindow] = [:]
+    private struct RememberedSnapshot {
+        let ownerPID: pid_t
+        let title: String
+        let snapshot: StatusItemSnapshot
+    }
+    private var rememberedSnapshots: [CGWindowID: RememberedSnapshot] = [:]
     func capture(
         excluding ownPID: pid_t,
         excludingTitles: Set<String>,
-        maximumX: CGFloat?
+        maximumX: CGFloat?,
+        includingOverflowOutside visibleBounds: CGRect? = nil
     ) -> [StatusItemSnapshot] {
         return statusItemWindows()
             .filter { window in
                 // NSStatusItem windows are hosted by Control Center on modern macOS, so their
                 // owner PID is not this app. Exclude our own two items by both possible signals.
-                guard window.ownerPID != ownPID, !excludingTitles.contains(window.title) else {
+                guard (window.ownerPID != ownPID || testItemImages[window.title] != nil), !excludingTitles.contains(window.title) else {
                     return false
                 }
 
                 guard StatusItemWindowCatalog.isUserMenuBarItem(window) else { return false }
 
                 guard let maximumX else { return true }
-                return window.frame.maxX <= maximumX
+                return StatusItemWindowCatalog.belongsInShelf(window.frame, boundaryX: maximumX, visibleBounds: visibleBounds)
             }
             .sorted { $0.frame.minX < $1.frame.minX }
-            .compactMap { window in
-                guard let image = CGWindowListCreateImage(
-                    .null,
-                    .optionIncludingWindow,
-                    window.id,
-                    [.boundsIgnoreFraming, .bestResolution]
-                ), hasMeaningfulIconPixels(image) else {
-                    return nil
+            .map { window in
+                let captured = CGWindowListCreateImage(
+                    .null, .optionIncludingWindow, window.id, [.boundsIgnoreFraming, .bestResolution]
+                )
+                let image: NSImage
+                let usesApplicationIcon: Bool
+                let usesUnavailableImage: Bool
+                let old = rememberedSnapshots[window.id].flatMap {
+                    $0.ownerPID == window.ownerPID && $0.title == window.title ? $0.snapshot : nil
                 }
-
-                let size = CGSize(width: image.width / 2, height: image.height / 2)
-                return StatusItemSnapshot(
+                if let testImage = testItemImages[window.title] {
+                    // These images belong to explicitly created native test items. They
+                    // are not fallback guesses for unknown third-party windows.
+                    image = testImage
+                    usesApplicationIcon = false
+                    usesUnavailableImage = false
+                } else if let captured, hasMeaningfulIconPixels(captured) {
+                    image = NSImage(cgImage: captured, size: window.frame.size)
+                    usesApplicationIcon = false
+                    usesUnavailableImage = false
+                } else if let old, !old.usesUnavailableImage {
+                    image = old.image
+                    usesApplicationIcon = old.usesApplicationIcon
+                    usesUnavailableImage = false
+                } else if let bundleID = window.itemBundleID,
+                          let appIcon = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.icon?.copy() as? NSImage {
+                    // Retain the actual item identity when off-screen surfaces cannot be
+                    // captured. Never substitute a host initial or invent an unknown app.
+                    appIcon.size = NSSize(width: 24, height: 24)
+                    image = appIcon
+                    usesApplicationIcon = true
+                    usesUnavailableImage = false
+                } else {
+                    // This is a verified real window, not a guessed application. Do not
+                    // erase it just because a single-display host cannot supply an image.
+                    image = NSImage(systemSymbolName: "questionmark.square", accessibilityDescription: "图像暂不可用") ?? NSImage(size: NSSize(width: 24, height: 24))
+                    image.size = NSSize(width: 24, height: 24)
+                    usesApplicationIcon = false
+                    usesUnavailableImage = true
+                }
+                let snapshot = StatusItemSnapshot(
                     id: window.id,
                     key: "\(window.ownerPID)|\(window.itemBundleID ?? window.ownerName)|\(window.title)",
-                    exclusionKey: window.exclusionKey,
-                    image: NSImage(cgImage: image, size: size),
-                    label: itemLabel(for: window)
+                    exclusionKey: testItemImages[window.title] != nil ? nil : window.exclusionKey,
+                    image: image,
+                    label: usesUnavailableImage ? "菜单项 #\(window.id)（应用身份及图像暂不可用）" : itemLabel(for: window),
+                    usesApplicationIcon: usesApplicationIcon,
+                    usesUnavailableImage: usesUnavailableImage
                 )
+                rememberedSnapshots[window.id] = RememberedSnapshot(ownerPID: window.ownerPID, title: window.title, snapshot: snapshot)
+                return snapshot
             }
     }
 
@@ -137,6 +183,9 @@ final class StatusItemSnapshotter {
     @discardableResult
     func move(windowID: CGWindowID, beside targetID: CGWindowID, onRight: Bool) async -> MoveResult {
         guard accessibilityIsTrusted(prompting: true) else { return .accessibilityDenied }
+        guard await waitForPointerIdle() else { return .userInputBusy }
+        let cursor = MenuBarCursorGuard(hideCursor: false)
+        defer { cursor.finish() }
 
         var lastRoutingFailure: MenuBarEventRouter.Result?
         for _ in 0..<3 {
@@ -181,6 +230,15 @@ final class StatusItemSnapshotter {
         statusItemWindows().first { $0.title == title }?.id
     }
 
+    func testItemSummary(boundaryX: CGFloat?, visibleBounds: CGRect?) -> String {
+        let windows = statusItemWindows().filter { testItemImages[$0.title] != nil }
+        let overflow = windows.filter { window in
+            guard let visibleBounds, let boundaryX else { return false }
+            return window.frame.minX >= boundaryX && !visibleBounds.contains(window.frame)
+        }
+        return "识别到 \(windows.count) 个真实测试项；其中 \(overflow.count) 个在可见分组一侧自然溢出。"
+    }
+
     func hiddenBoundaryX(titled title: String) -> CGFloat? {
         statusItemWindows().first { $0.title == title }?.frame.minX
     }
@@ -196,7 +254,7 @@ final class StatusItemSnapshotter {
     /// macOS requires Accessibility permission for synthesized input, so the first click can
     /// display the system permission prompt instead of silently doing nothing.
     @discardableResult
-    func click(windowID: CGWindowID, mouseButton: CGMouseButton, promptingForAccessibility: Bool) async -> Bool {
+    func click(windowID: CGWindowID, mouseButton: CGMouseButton, promptingForAccessibility: Bool, preserveCursorPosition: Bool = false) async -> Bool {
         guard accessibilityIsTrusted(prompting: promptingForAccessibility),
               let frame = windowFrame(for: windowID),
               let source = CGEventSource(stateID: .hidSystemState)
@@ -204,47 +262,113 @@ final class StatusItemSnapshotter {
             return false
         }
 
+        let cursor = MenuBarCursorGuard()
+        var restoreCursor = true
+        defer { cursor.finish(restorePosition: restoreCursor) }
         let point = CGPoint(x: frame.midX, y: frame.midY)
-        if mouseButton == .right,
-           let item = statusWindow(for: windowID),
-           let mouseDown = menuBarEvent(
-               type: .rightMouseDown,
-               location: point,
-               targetWindowID: item.id,
-               ownerPID: item.ownerPID,
-               source: source,
-               flags: []
-           ),
-           let mouseUp = menuBarEvent(
-               type: .rightMouseUp,
-               location: point,
-               targetWindowID: item.id,
-               ownerPID: item.ownerPID,
-               source: source,
-               flags: []
-           )
-        {
-            // Status-item context menus are stricter than primary clicks: route the event with
-            // the actual target WindowID and owner PID, matching the proven drag route.
-            guard await eventRouter.route(mouseDown, to: item.ownerPID) == .delivered else { return false }
-            return await eventRouter.route(mouseUp, to: item.ownerPID) == .delivered
+        guard let item = statusWindow(for: windowID),
+              let down = menuBarEvent(type: mouseButton == .right ? .rightMouseDown : .leftMouseDown,
+                                      location: point, targetWindowID: item.id, ownerPID: item.ownerPID,
+                                      source: source, flags: []),
+              let up = menuBarEvent(type: mouseButton == .right ? .rightMouseUp : .leftMouseUp,
+                                    location: point, targetWindowID: item.id, ownerPID: item.ownerPID,
+                                    source: source, flags: []) else { return false }
+        down.setIntegerValueField(.mouseEventClickState, value: 1)
+        up.setIntegerValueField(.mouseEventClickState, value: 1)
+        guard await eventRouter.route(down, to: item.ownerPID) == .delivered else { return false }
+        let result = await eventRouter.route(up, to: item.ownerPID)
+        // Session routing completes before the host finishes processing mouse-up.
+        try? await Task.sleep(for: .milliseconds(40))
+        if result == .delivered {
+            // Native menus may track the cursor. Returning to the dismissed proxy
+            // immediately can close the newly opened menu. Keep it at the real item.
+            restoreCursor = preserveCursorPosition
         }
+        return result == .delivered
+    }
 
-        let mouseDownType: CGEventType = mouseButton == .right ? .rightMouseDown : .leftMouseDown
-        let mouseUpType: CGEventType = mouseButton == .right ? .rightMouseUp : .leftMouseUp
-        CGEvent(
-            mouseEventSource: source,
-            mouseType: mouseDownType,
-            mouseCursorPosition: point,
-            mouseButton: mouseButton
-        )?.post(tap: .cghidEventTap)
-        CGEvent(
-            mouseEventSource: source,
-            mouseType: mouseUpType,
-            mouseCursorPosition: point,
-            mouseButton: mouseButton
-        )?.post(tap: .cghidEventTap)
-        return true
+    struct TemporaryPlacement {
+        let windowID: CGWindowID
+        let returnAnchorID: CGWindowID
+        let onRight: Bool
+    }
+
+    enum RevealResult {
+        case ready(TemporaryPlacement?)
+        case failed(String)
+    }
+
+    func revealForClick(windowID: CGWindowID, within bounds: CGRect) async -> RevealResult {
+        let windows = statusItemWindows().sorted { $0.frame.minX < $1.frame.minX }
+        guard let index = windows.firstIndex(where: { $0.id == windowID }) else { return .failed("找不到原生菜单项") }
+        let item = windows[index]
+        if bounds.contains(item.frame) { return .ready(nil) }
+        let neighbor: StatusWindow
+        let onRight: Bool
+        if windows.indices.contains(index + 1) {
+            neighbor = windows[index + 1]
+            onRight = false
+        } else if windows.indices.contains(index - 1) {
+            neighbor = windows[index - 1]
+            onRight = true
+        } else { return .failed("无法记录原位置") }
+        guard let target = StatusItemWindowCatalog.revealAnchor(for: item, in: windows, bounds: bounds) else {
+            return .failed("没有可用位置容纳该图标")
+        }
+        let placement = TemporaryPlacement(windowID: item.id, returnAnchorID: neighbor.id, onRight: onRight)
+        let result = await move(windowID: item.id, beside: target.id, onRight: false)
+        if result == .moved, let frame = windowFrame(for: item.id), bounds.contains(frame) {
+            return .ready(placement)
+        }
+        // Even a failed confirmation may have changed the physical layout.
+        _ = await restore(placement)
+        return .failed("无法将目标移入可见区域：\(result.description)")
+    }
+
+    func restore(_ placement: TemporaryPlacement) async -> MoveResult {
+        await move(windowID: placement.windowID, beside: placement.returnAnchorID, onRight: placement.onRight)
+    }
+
+    func isTestWindow(_ windowID: CGWindowID) -> Bool {
+        guard let item = statusWindow(for: windowID) else { return false }
+        return testItemImages[item.title] != nil
+    }
+
+    /// Cache only frames that did not move while the asynchronous screenshot ran;
+    /// otherwise a changed layout could assign another item's pixels to this ID.
+    @discardableResult
+    func cacheVisibleImages(displayID: CGDirectDisplayID, bounds: CGRect? = nil) async -> Int {
+        let windows = statusItemWindows().filter { StatusItemWindowCatalog.isUserMenuBarItem($0) && (bounds?.contains($0.frame) ?? true) }
+        let images = await StatusItemScreenCapture.capture(windows: windows, displayID: displayID)
+        let current = Dictionary(uniqueKeysWithValues: statusItemWindows().map { ($0.id, $0) })
+        var count = 0
+        for window in windows {
+            guard let image = images[window.id], let latest = current[window.id],
+                  latest.frame == window.frame, latest.ownerPID == window.ownerPID, latest.title == window.title else { continue }
+            let snapshot = StatusItemSnapshot(id: window.id,
+                key: "\(window.ownerPID)|\(window.itemBundleID ?? window.ownerName)|\(window.title)",
+                exclusionKey: window.exclusionKey, image: image, label: itemLabel(for: window))
+            rememberedSnapshots[window.id] = RememberedSnapshot(ownerPID: window.ownerPID, title: window.title, snapshot: snapshot)
+            count += 1
+        }
+        return count
+    }
+
+    func recoverMissingImages(excluding ownPID: pid_t, excludingTitles: Set<String>, bounds: CGRect, displayID: CGDirectDisplayID) async {
+        _ = await cacheVisibleImages(displayID: displayID, bounds: bounds)
+        guard AXIsProcessTrusted(), ScreenCapturePermission.isGranted else { return }
+        let missing = captureAllCandidates(excluding: ownPID, excludingTitles: excludingTitles)
+            .filter { $0.usesUnavailableImage || $0.usesApplicationIcon }
+        for item in missing {
+            guard !Task.isCancelled else { return }
+            switch await revealForClick(windowID: item.id, within: bounds) {
+            case .failed: continue
+            case .ready(let placement):
+                try? await Task.sleep(for: .milliseconds(100))
+                _ = await cacheVisibleImages(displayID: displayID, bounds: bounds)
+                if let placement { _ = await restore(placement) }
+            }
+        }
     }
 
     private func statusItemWindows() -> [StatusWindow] {
@@ -277,10 +401,22 @@ final class StatusItemSnapshotter {
                                 ownerBundleID: NSRunningApplication(processIdentifier: ownerPID)?.bundleIdentifier,
                                 title: title, frame: frame)
         }
-        return StatusItemWindowCatalog.realWindows(windows, screenWidths: NSScreen.screens.map { $0.frame.width })
+        let real = StatusItemWindowCatalog.realWindows(windows, screenWidths: NSScreen.screens.map { $0.frame.width })
+        let restored = StatusItemWindowCatalog.preservingIdentities(real, previous: rememberedWindows)
+        if !restored.isEmpty {
+            rememberedWindows = Dictionary(uniqueKeysWithValues: restored.map { ($0.id, $0) })
+            rememberedSnapshots = rememberedSnapshots.filter { id, old in
+                guard let current = rememberedWindows[id] else { return false }
+                return current.ownerPID == old.ownerPID && current.title == old.title
+            }
+        }
+        return restored
     }
 
     private func itemLabel(for window: StatusWindow) -> String {
+        if testItemImages[window.title] != nil, let number = Int(window.title.split(separator: ".").last ?? "") {
+            return String(format: "溢出验证 T%02d", number)
+        }
         if let bundleID = window.itemBundleID {
             return NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.localizedName ?? bundleID
         }
@@ -297,6 +433,8 @@ final class StatusItemSnapshotter {
         destination: CGPoint,
         source: CGEventSource
     ) async -> MenuBarEventRouter.Result {
+        let gestureCursor = MenuBarCursorGuard()
+        defer { gestureCursor.finish() }
         guard
             let mouseDown = menuBarEvent(
                 type: .leftMouseDown,
@@ -354,7 +492,7 @@ final class StatusItemSnapshotter {
             mouseEventSource: source,
             mouseType: type,
             mouseCursorPosition: location,
-            mouseButton: .left
+            mouseButton: (type == .rightMouseDown || type == .rightMouseUp) ? .right : .left
         ) else {
             return nil
         }
@@ -428,7 +566,7 @@ final class StatusItemSnapshotter {
         return Array(ids.prefix(Int(actualCount)))
     }
 
-    private func windowFrame(for windowID: CGWindowID) -> CGRect? {
+    func windowFrame(for windowID: CGWindowID) -> CGRect? {
         var rawID = UnsafeRawPointer(bitPattern: UInt(windowID))
         guard let array = CFArrayCreate(kCFAllocatorDefault, &rawID, 1, nil),
               let description = (CGWindowListCreateDescriptionFromArray(array) as? [[CFString: Any]])?.first,
@@ -437,6 +575,19 @@ final class StatusItemSnapshotter {
             return nil
         }
         return CGRect(dictionaryRepresentation: bounds)
+    }
+
+    private func waitForPointerIdle() async -> Bool {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while ContinuousClock.now < deadline {
+            let held = CGEventSource.buttonState(.combinedSessionState, button: .left) ||
+                CGEventSource.buttonState(.combinedSessionState, button: .right)
+            let recentlyMoved = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .mouseMoved) < 0.15 ||
+                CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .leftMouseDragged) < 0.15
+            if !held, !recentlyMoved { return true }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return false
     }
 
     private func accessibilityIsTrusted(prompting: Bool) -> Bool {

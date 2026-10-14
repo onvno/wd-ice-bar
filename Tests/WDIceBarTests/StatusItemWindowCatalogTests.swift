@@ -59,4 +59,50 @@ struct StatusItemWindowCatalogTests {
         #expect(StatusItemWindowCatalog.isUserMenuBarItem(item))
     }
 
+
+    @Test func naturallyOverflowedVisibleGroupItemsBelongInShelf() {
+        let display = CGRect(x: 0, y: 0, width: 1728, height: 1117)
+        let overflow = CGRect(x: -50, y: 0, width: 38, height: 33)
+        #expect(StatusItemWindowCatalog.belongsInShelf(overflow, boundaryX: -4000, visibleBounds: display))
+        #expect(!StatusItemWindowCatalog.belongsInShelf(overflow, boundaryX: -4000, visibleBounds: nil))
+        let visible = CGRect(x: 1300, y: 0, width: 38, height: 33)
+        #expect(!StatusItemWindowCatalog.belongsInShelf(visible, boundaryX: -4000, visibleBounds: display))
+        let hidden = CGRect(x: -5000, y: 0, width: 38, height: 33)
+        #expect(StatusItemWindowCatalog.belongsInShelf(hidden, boundaryX: -4000, visibleBounds: display))
+    }
+
+    @Test func clippedItemsAndNotchOcclusionAreOverflowButOtherDisplayRowsAreNot() {
+        let rightArea = CGRect(x: 900, y: 0, width: 828, height: 1117)
+        #expect(StatusItemWindowCatalog.belongsInShelf(CGRect(x: 880, y: 0, width: 38, height: 33), boundaryX: 10, visibleBounds: rightArea))
+        #expect(!StatusItemWindowCatalog.belongsInShelf(CGRect(x: 880, y: 200, width: 38, height: 33), boundaryX: 10, visibleBounds: rightArea))
+    }
+
+    @Test func losingMirrorWindowsPreservesKnownClientButNeverReusesAnotherIdentity() throws {
+        var known = window(1, title: "Item-0", x: 100)
+        known.itemBundleID = "com.example.first"
+        let current = window(1, title: "Item-0", x: -5000)
+        let restored = StatusItemWindowCatalog.preservingIdentities([current], previous: [1: known])
+        #expect(restored.first?.itemBundleID == "com.example.first")
+        let changedTitle = window(1, title: "Item-1", x: -5000)
+        #expect(StatusItemWindowCatalog.preservingIdentities([changedTitle], previous: [1: known]).first?.itemBundleID == nil)
+        let changedProcess = StatusWindow(id: 1, ownerPID: 200, ownerName: "控制中心", ownerBundleID: "com.apple.controlcenter",
+                                          title: "Item-0", frame: current.frame)
+        #expect(StatusItemWindowCatalog.preservingIdentities([changedProcess], previous: [1: known]).first?.itemBundleID == nil)
+    }
+
+    @Test func revealUsesVisibleMovableAnchorAndSkipsFixedSystemItems() {
+        let bounds = CGRect(x: 900, y: 0, width: 828, height: 1117)
+        let source = window(1, title: "Item-0", x: -5000, width: 96)
+        let tooCloseToNotch = window(2, title: "Item-0", x: 920)
+        let target = window(3, title: "WDIceBar.Toggle.v1", x: 1400)
+        let clock = window(4, title: "Clock", x: 1600)
+        #expect(StatusItemWindowCatalog.revealAnchor(for: source, in: [source, tooCloseToNotch, target, clock], bounds: bounds)?.id == 3)
+        #expect(StatusItemWindowCatalog.revealAnchor(for: source, in: [source, tooCloseToNotch, clock], bounds: bounds) == nil)
+    }
+
+    @Test func realUnknownHostedItemIsRetainedButAnonymousHostCopyIsNotACandidate() {
+        #expect(StatusItemWindowCatalog.isUserMenuBarItem(window(1, title: "Item-0", x: -5000)))
+        #expect(!StatusItemWindowCatalog.isUserMenuBarItem(window(2, title: "", x: -5000)))
+    }
+
 }

@@ -36,8 +36,13 @@ final class MenuBarController: NSObject {
     }
 
     private enum ItemName {
+#if MENU_BAR_INTEGRATION
+        static let trigger = "WDClickIntegration.Toggle"
+        static let divider = "WDClickIntegration.Divider"
+#else
         static let trigger = "WDIceBar.Toggle.v1"
         static let divider = "WDIceBar.Divider.v1"
+#endif
     }
 
     private enum State {
@@ -51,9 +56,22 @@ final class MenuBarController: NSObject {
     private let snapshotter = StatusItemSnapshotter()
     private let panel = HiddenItemsPanel()
     private let exclusions = StatusItemExclusions()
+    private let overflowTest = MenuBarOverflowTest()
+    private let controlHotKey = MenuBarHotKey()
     private var cachedSnapshots: [StatusItemSnapshot] = []
     private var outsideClickMonitor: Any?
+    private var nativeMenuTracker: MenuBarNativeMenuTracker?
     private var nativeContextMenuIsOpen = false
+    private var activationTask: Task<Void, Never>?
+    private var restorationTask: Task<Void, Never>?
+    private var temporaryPlacement: StatusItemSnapshotter.TemporaryPlacement?
+    private var isActivatingNativeItem = false
+    private var receivedNativeTestClick = false
+    private var localClickMonitor: Any?
+    private var dismissalGeneration: UInt64 = 0
+    private var imageRecoveryTask: Task<Void, Never>?
+    private var isRecoveringImages = false
+    private var attemptedImageRecovery: Set<CGWindowID> = []
     private var layoutTask: Task<Void, Never>?
     private var isApplyingLayout = false
     private var iconChoice: IconChoice {
@@ -78,17 +96,60 @@ final class MenuBarController: NSObject {
     }
 
     func start() {
+        overflowTest.insertionPosition = {
+            UserDefaults.standard.integer(forKey: "NSStatusItem Preferred Position \(ItemName.trigger)") + 1
+        }
+        overflowTest.shortcutAvailable = controlHotKey.register { [weak self] in self?.showControlWindow() }
+        overflowTest.onChange = { [weak self] images in
+            guard let self else { return }
+            self.snapshotter.testItemImages = images
+            self.cachedSnapshots.removeAll { $0.key.contains("WDIceBar.Test.") }
+        }
+        overflowTest.onNativeReceipt = { [weak self] in
+            guard let self else { return }
+            self.receivedNativeTestClick = true
+            if !self.isActivatingNativeItem, self.nativeContextMenuIsOpen { self.hideNativeItems() }
+        }
+        overflowTest.onMeasure = { [weak self] in
+            guard let self else { return "" }
+            return self.snapshotter.testItemSummary(
+                boundaryX: self.snapshotter.hiddenBoundaryX(titled: ItemName.divider),
+                visibleBounds: self.menuBarVisibleBounds()
+            )
+        }
+        overflowTest.onShowVirtualMenu = { [weak self] in
+            guard let self else { return }
+            self.refreshSnapshotCache()
+            self.showPanel()
+        }
         configureTrigger()
         configureDivider()
         // Capture while native status items are still on-screen. Later taps can show this
         // cached representation directly, avoiding the distracting reveal-then-hide flash.
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(180)) { [weak self] in
-            self?.refreshSnapshotCache()
-            self?.hideNativeItems()
+            self?.captureThenFinish(showPanelAfter: false, recoverMissing: false)
+        }
+    }
+
+    func restoreBeforeTermination() async {
+        if let imageRecoveryTask { await imageRecoveryTask.value }
+        if let activationTask { await activationTask.value }
+        if let restorationTask { await restorationTask.value }
+        if let placement = temporaryPlacement {
+            temporaryPlacement = nil
+            _ = await snapshotter.restore(placement)
         }
     }
 
     func stop() {
+        imageRecoveryTask?.cancel()
+        activationTask?.cancel()
+        restorationTask?.cancel()
+        stopOutsideClickMonitor()
+        nativeMenuTracker?.stop()
+        nativeMenuTracker = nil
+        controlHotKey.unregister()
+        overflowTest.clear()
         NSStatusBar.system.removeStatusItem(triggerItem)
         NSStatusBar.system.removeStatusItem(dividerItem)
     }
@@ -156,6 +217,10 @@ final class MenuBarController: NSObject {
         restore.isEnabled = exclusions.hasExclusions
         menu.addItem(restore)
 
+        let test = NSMenuItem(title: "菜单栏溢出验证…", action: #selector(showOverflowTest), keyEquivalent: "")
+        test.target = self
+        menu.addItem(test)
+
         let icons = NSMenu(title: "更换图标")
         for choice in IconChoice.allCases {
             let item = NSMenuItem(title: choice.title, action: #selector(selectIcon), keyEquivalent: "")
@@ -194,7 +259,7 @@ final class MenuBarController: NSObject {
     }
 
     @objc private func enterArrangementMode() {
-        guard !isApplyingLayout else { return }
+        guard !isApplyingLayout, !isRecoveringImages else { return }
         panel.dismissForLayoutTransaction()
         // Restore the genuine layout before capturing candidates. Unlike the normal adjustment
         // mode, the editor can show candidates that are currently beyond the screen edge.
@@ -211,6 +276,10 @@ final class MenuBarController: NSObject {
         }
     }
 
+    func showControlWindow() { overflowTest.show() }
+
+    @objc private func showOverflowTest() { showControlWindow() }
+
     @objc private func quitApplication() {
         NSApp.terminate(nil)
     }
@@ -221,21 +290,41 @@ final class MenuBarController: NSObject {
     }
 
     @objc private func refreshHiddenItems() {
-        if state == .arranging {
-            // The divider is already narrow, so the native item frames are current.
-            refreshSnapshotCache()
-            return
-        }
+        attemptedImageRecovery.removeAll()
+        captureThenFinish(showPanelAfter: false, recoverMissing: true, returnToArrangement: state == .arranging)
+    }
 
-        // The wide hiding divider can make the WindowServer report no usable hidden frames.
-        // Restore the native layout first, wait for it to settle, then capture a new cache.
-        // Keeping the old cache on an empty scan avoids erasing usable snapshots on a transient
-        // WindowServer miss.
-        dividerItem.length = 1
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(180)) { [weak self] in
+    private func captureThenFinish(showPanelAfter: Bool, recoverMissing: Bool, returnToArrangement: Bool = false) {
+        guard !isRecoveringImages, !isActivatingNativeItem, restorationTask == nil else { return }
+        isRecoveringImages = true
+        stopOutsideClickMonitor()
+        if !returnToArrangement { dividerItem.length = 1; state = .shown }
+        imageRecoveryTask = Task { [weak self] in
             guard let self else { return }
+            try? await Task.sleep(for: .milliseconds(180))
+            if let screen = self.panel.screen ?? self.triggerItem.button?.window?.screen ?? NSScreen.main,
+               let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+               let bounds = self.menuBarVisibleBounds(on: screen) {
+                if recoverMissing {
+                    await self.snapshotter.recoverMissingImages(excluding: getpid(),
+                        excludingTitles: [ItemName.divider, ItemName.trigger], bounds: bounds, displayID: number.uint32Value)
+                } else {
+                    _ = await self.snapshotter.cacheVisibleImages(displayID: number.uint32Value, bounds: bounds)
+                }
+            }
             self.refreshSnapshotCache()
-            self.hideNativeItems()
+            self.attemptedImageRecovery.formUnion(self.cachedSnapshots.filter { $0.usesUnavailableImage || $0.usesApplicationIcon }.map(\.id))
+            self.isRecoveringImages = false
+            self.imageRecoveryTask = nil
+            if returnToArrangement {
+                self.presentArrangementEditor()
+                self.startOutsideClickMonitor()
+            } else if showPanelAfter {
+                self.dividerItem.length = 10_000
+                self.showPanel(refreshingEmptyCache: false)
+            } else {
+                self.hideNativeItems()
+            }
         }
     }
 
@@ -260,6 +349,24 @@ final class MenuBarController: NSObject {
     }
 
     private func hideNativeItems() {
+        guard !isActivatingNativeItem, !isRecoveringImages, restorationTask == nil else { return }
+        nativeContextMenuIsOpen = false
+        nativeMenuTracker?.stop()
+        nativeMenuTracker = nil
+        if let placement = temporaryPlacement {
+            temporaryPlacement = nil
+            stopOutsideClickMonitor()
+            restorationTask = Task { [weak self] in
+                guard let self else { return }
+                let result = await self.snapshotter.restore(placement)
+                self.restorationTask = nil
+                self.hideNativeItems()
+                if result != .moved, result != .sourceOrTargetMissing {
+                    self.reportActivationFailure("点击后未能恢复原位置：\(result.description)")
+                }
+            }
+            return
+        }
         layoutTask?.cancel()
         layoutTask = nil
         isApplyingLayout = false
@@ -277,19 +384,10 @@ final class MenuBarController: NSObject {
     }
 
     private func showPanel(refreshingEmptyCache: Bool = true) {
-        if cachedSnapshots.isEmpty, refreshingEmptyCache {
-            // First-run WindowServer settling or a newly granted capture permission can
-            // leave the startup cache empty. Retry once with real items restored.
-            dividerItem.length = 1
-            state = .shown
-            updateTriggerIcon(isHidden: false)
-            startOutsideClickMonitor()
-            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(220)) { [weak self] in
-                guard let self, self.state == .shown else { return }
-                self.refreshSnapshotCache()
-                self.dividerItem.length = 10_000
-                self.showPanel(refreshingEmptyCache: false)
-            }
+        guard !isRecoveringImages else { return }
+        let missing = Set(cachedSnapshots.filter { $0.usesUnavailableImage || $0.usesApplicationIcon }.map(\.id))
+        if refreshingEmptyCache, cachedSnapshots.isEmpty || !missing.subtracting(attemptedImageRecovery).isEmpty {
+            captureThenFinish(showPanelAfter: true, recoverMissing: true)
             return
         }
         panel.show(
@@ -401,15 +499,24 @@ final class MenuBarController: NSObject {
     }
 
     private func startOutsideClickMonitor() {
+        installLocalDismissMonitor()
         guard outsideClickMonitor == nil else { return }
-        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] _ in
+        let generation = dismissalGeneration
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
+            // Routed input can arrive after activation finishes. Never treat our
+            // synthetic click/drag as a user dismissing the menu it just opened.
+            guard MenuBarDismissalPolicy.isUserInput(event.cgEvent) else { return }
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, self.dismissalGeneration == generation,
+                      !self.isActivatingNativeItem, !self.isRecoveringImages else { return }
+                if event.type == .keyDown, event.keyCode != 53 { return }
                 switch self.state {
                 case .shown:
                     if self.nativeContextMenuIsOpen {
-                        self.nativeContextMenuIsOpen = false
-                        self.hideNativeItems()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(180)) { [weak self] in
+                            guard let self, self.dismissalGeneration == generation else { return }
+                            self.finishNativeInteractionIfDismissed()
+                        }
                     } else {
                         self.panel.close()
                     }
@@ -422,6 +529,29 @@ final class MenuBarController: NSObject {
         }
     }
 
+    private func installLocalDismissMonitor() {
+        guard localClickMonitor == nil else { return }
+        let generation = dismissalGeneration
+        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
+            guard MenuBarDismissalPolicy.isUserInput(event.cgEvent) else { return event }
+            if let self, self.dismissalGeneration == generation, !self.isActivatingNativeItem, !self.isRecoveringImages, self.nativeContextMenuIsOpen,
+               event.window !== self.panel, (event.type != .keyDown || event.keyCode == 53) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(180)) { [weak self] in
+                    guard let self, self.dismissalGeneration == generation else { return }
+                    self.finishNativeInteractionIfDismissed()
+                }
+            }
+            return event
+        }
+    }
+
+    private func finishNativeInteractionIfDismissed() {
+        // A menu-item click may open a submenu or a popover. Moving the anchor
+        // while that interface is still visible would dismiss it prematurely.
+        guard nativeMenuTracker?.hasVisibleInterface != true else { return }
+        hideNativeItems()
+    }
+
     private func isNativeMenuBarClick() -> Bool {
         let point = NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }) else { return false }
@@ -429,6 +559,11 @@ final class MenuBarController: NSObject {
     }
 
     private func stopOutsideClickMonitor() {
+        dismissalGeneration &+= 1
+        if let localClickMonitor {
+            NSEvent.removeMonitor(localClickMonitor)
+            self.localClickMonitor = nil
+        }
         if let outsideClickMonitor {
             NSEvent.removeMonitor(outsideClickMonitor)
             self.outsideClickMonitor = nil
@@ -444,6 +579,17 @@ final class MenuBarController: NSObject {
         button.image?.isTemplate = true
     }
 
+    private func menuBarVisibleBounds(on preferredScreen: NSScreen? = nil) -> CGRect? {
+        guard let screen = preferredScreen ?? triggerItem.button?.window?.screen ?? NSScreen.main,
+              let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+        else { return nil }
+        let display = CGDisplayBounds(number.uint32Value)
+        // On a notched display, status items must fit in the area to the notch's right.
+        let area = screen.auxiliaryTopRightArea
+        return CGRect(x: area?.minX ?? display.minX, y: display.minY,
+                      width: area?.width ?? display.width, height: display.height)
+    }
+
     private func refreshSnapshotCache() {
         // A missing AppKit window used to pass nil and capture the entire menu bar.
         // Read the boundary from the same WindowServer coordinate space as the items.
@@ -451,7 +597,8 @@ final class MenuBarController: NSObject {
         let snapshots = snapshotter.capture(
             excluding: getpid(),
             excludingTitles: [ItemName.divider, ItemName.trigger],
-            maximumX: maximumX
+            maximumX: maximumX,
+            includingOverflowOutside: menuBarVisibleBounds()
         )
         // Preserve a cache only for a genuinely empty WindowServer scan. An exclusion
         // that removes the final candidate must also be allowed to empty the shelf.
@@ -482,30 +629,115 @@ final class MenuBarController: NSObject {
         }
     }
 
+    private func reportActivationFailure(_ message: String) {
+#if MENU_BAR_INTEGRATION
+        print("ACTIVATION_FAILURE \(message)")
+#else
+        if overflowTest.isActive {
+            overflowTest.reportFailure(message)
+        } else {
+            let alert = NSAlert()
+            alert.messageText = "无法打开原生菜单项"
+            alert.informativeText = message
+            alert.runModal()
+        }
+#endif
+    }
+
     private func activateNativeItem(_ windowID: CGWindowID, mouseButton: CGMouseButton) {
-        // The original item must briefly return to the menu bar before macOS can deliver a click.
-        dividerItem.length = 1
+        guard !isActivatingNativeItem, !isRecoveringImages, restorationTask == nil else { return }
+        // Keep the wide divider in place: move only this item across it and
+        // retain its original neighbour so dismissal restores the hidden group.
+        let preferredScreen = panel.screen ?? NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+        stopOutsideClickMonitor()
         state = .shown
+        isActivatingNativeItem = true
+        receivedNativeTestClick = false
+        let isTest = snapshotter.isTestWindow(windowID)
 
-        Task { @MainActor [weak self] in
+        activationTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            // A WindowServer frame can move before the status-item host finishes installing its
-            // contextual-menu tracking. A short settle time is more reliable for right clicks.
             try? await Task.sleep(for: .milliseconds(220))
-
-            let didClick = await self.snapshotter.click(
-                windowID: windowID,
-                mouseButton: mouseButton,
-                promptingForAccessibility: true
-            )
-            if mouseButton == .right, didClick {
-                // Keep the real item exposed while its own contextual menu is on screen.
-                self.nativeContextMenuIsOpen = true
-            } else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self] in
-                    self?.hideNativeItems()
+            guard let bounds = self.menuBarVisibleBounds(on: preferredScreen) else {
+                self.isActivatingNativeItem = false
+                self.activationTask = nil
+                self.hideNativeItems()
+                self.reportActivationFailure("无法确定目标显示器的菜单栏可见区域")
+                return
+            }
+            let reveal = await self.snapshotter.revealForClick(windowID: windowID, within: bounds)
+            switch reveal {
+            case .failed(let message):
+                self.isActivatingNativeItem = false
+                self.activationTask = nil
+                self.hideNativeItems()
+                self.reportActivationFailure(message)
+                return
+            case .ready(let placement):
+                self.temporaryPlacement = placement
+            }
+#if MENU_BAR_INTEGRATION
+            print("ACTIVATION revealed target=\(windowID) moved=\(self.temporaryPlacement != nil)")
+#endif
+            try? await Task.sleep(for: .milliseconds(100))
+            let needsImage = self.cachedSnapshots.first { $0.id == windowID }.map { $0.usesUnavailableImage || $0.usesApplicationIcon } ?? true
+            if needsImage, let screen = preferredScreen,
+               let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
+                _ = await self.snapshotter.cacheVisibleImages(displayID: number.uint32Value, bounds: bounds)
+                self.refreshSnapshotCache()
+            }
+            if !isTest, let frame = self.snapshotter.windowFrame(for: windowID) {
+                let tracker = MenuBarNativeMenuTracker(itemFrame: frame)
+                self.nativeMenuTracker = tracker
+                tracker.start { [weak self] in
+                    guard let self, self.nativeContextMenuIsOpen else { return }
+                    self.hideNativeItems()
                 }
+            }
+            let didClick = await self.snapshotter.click(windowID: windowID, mouseButton: mouseButton,
+                                                       promptingForAccessibility: true, preserveCursorPosition: isTest)
+#if MENU_BAR_INTEGRATION
+            print("ACTIVATION clicked=\(didClick)")
+#endif
+            self.isActivatingNativeItem = false
+            self.activationTask = nil
+            if !didClick {
+                self.hideNativeItems()
+                self.reportActivationFailure("原生点击事件未能送达，请检查辅助功能权限")
+                return
+            }
+            // Leave ordinary native menus exposed until the next outside click or Escape.
+            // A test item's own receipt is an observable completion signal instead.
+            self.nativeContextMenuIsOpen = true
+            self.startOutsideClickMonitor()
+            if isTest {
+                try? await Task.sleep(for: .milliseconds(250))
+                if !self.receivedNativeTestClick {
+                    self.reportActivationFailure("目标已移入可见区，事件已发送，但未收到原生点击回执")
+                }
+                self.hideNativeItems()
             }
         }
     }
 }
+
+#if MENU_BAR_INTEGRATION
+// The disposable native integration executable exercises the real activation and
+// dismissal code without startup image recovery or the app's saved preferences.
+extension MenuBarController {
+    func prepareForIntegrationVerification() {
+        configureTrigger()
+        configureDivider()
+        dividerItem.length = 10_000
+        state = .hidden
+    }
+
+    func activateForIntegrationVerification(_ windowID: CGWindowID) {
+        startOutsideClickMonitor()
+        activateNativeItem(windowID, mouseButton: .left)
+    }
+
+    var isNativeActivationIdleForVerification: Bool { !isActivatingNativeItem && restorationTask == nil }
+    var dividerLengthForVerification: CGFloat { dividerItem.length }
+}
+#endif

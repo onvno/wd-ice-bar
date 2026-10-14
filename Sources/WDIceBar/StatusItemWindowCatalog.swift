@@ -53,8 +53,36 @@ enum StatusItemWindowCatalog {
         }
     }
 
+    static func preservingIdentities(_ windows: [StatusWindow], previous: [CGWindowID: StatusWindow]) -> [StatusWindow] {
+        windows.map { window in
+            var current = window
+            if current.itemBundleID == nil, let old = previous[current.id],
+               old.ownerPID == current.ownerPID, old.title == current.title {
+                current.itemBundleID = old.itemBundleID
+            }
+            return current
+        }
+    }
+
+    /// Choose a real, movable anchor with enough room to its left. A full menu
+    /// bar can still expose the target by moving one item rather than revealing all.
+    static func revealAnchor(for item: StatusWindow, in windows: [StatusWindow], bounds: CGRect) -> StatusWindow? {
+        windows.filter {
+            $0.id != item.id && isUserMenuBarItem($0) && bounds.contains($0.frame) &&
+                abs($0.frame.minY - bounds.minY) <= 1 &&
+                $0.frame.minX - item.frame.width >= bounds.minX + 4
+        }.max { $0.frame.minX < $1.frame.minX }
+    }
+
+    static func belongsInShelf(_ frame: CGRect, boundaryX: CGFloat, visibleBounds: CGRect?) -> Bool {
+        if frame.maxX <= boundaryX { return true }
+        guard let visibleBounds, abs(frame.minY - visibleBounds.minY) <= 1 else { return false }
+        return !visibleBounds.contains(frame)
+    }
+
     static func isUserMenuBarItem(_ window: StatusWindow) -> Bool {
         if window.ownerBundleID == "com.apple.WindowServer" || window.ownerName == "Window Server" { return false }
+        if window.isControlCenterHost, window.title.isEmpty { return false }
         // Control Center hosts third-party items too. Never reject its entire process.
         let reservedTitles: Set<String> = [
             "Clock", "BentoBox", "Battery", "Siri", "AudioVideoModule", "FaceTime",

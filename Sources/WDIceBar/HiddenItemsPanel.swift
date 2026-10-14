@@ -107,15 +107,6 @@ final class HiddenItemsPanel: NSPanel {
         stack.alignment = .centerY
         stack.spacing = 3
         stack.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        effect.addSubview(stack)
-
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: effect.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
-        ])
 
         if snapshots.isEmpty {
             let label = NSTextField(labelWithString: "没有可展示的隐藏图标。")
@@ -132,8 +123,12 @@ final class HiddenItemsPanel: NSPanel {
             for snapshot in snapshots {
                 let button = SnapshotButton(image: snapshot.image, target: self, action: #selector(activateSnapshot))
                 button.imageScaling = .scaleProportionallyDown
-                button.setFrameSize(CGSize(width: max(20, snapshot.image.size.width), height: 24))
-                button.toolTip = "\(snapshot.label) · 右键可移除或打开原生菜单"
+                button.translatesAutoresizingMaskIntoConstraints = false
+                NSLayoutConstraint.activate([
+                    button.widthAnchor.constraint(equalToConstant: max(24, snapshot.image.size.width)),
+                    button.heightAnchor.constraint(equalToConstant: 28),
+                ])
+                button.toolTip = "\(snapshot.label)\(snapshot.usesUnavailableImage ? "（仍保留真实项目，可点击尝试恢复或右键移除）" : snapshot.usesApplicationIcon ? "（原图未能截取，显示应用图标）" : "") · 右键可移除或打开原生菜单"
                 button.bezelStyle = .regularSquare
                 button.isBordered = false
                 // These are captured pixels, not template symbols. Preserve their original
@@ -159,6 +154,27 @@ final class HiddenItemsPanel: NSPanel {
                 stack.addArrangedSubview(button)
             }
         }
+        // A large overflow test (or many real apps) must not push the shelf itself
+        // beyond the screen. Keep its document full-sized and scroll horizontally.
+        let size = stack.fittingSize
+        stack.setFrameSize(size)
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.hasHorizontalScroller = true
+        scroll.hasVerticalScroller = false
+        scroll.autohidesScrollers = true
+        scroll.documentView = stack
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        effect.addSubview(scroll)
+        let maximumWidth = (NSScreen.main?.visibleFrame.width ?? 1000) - 16
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: effect.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
+            scroll.widthAnchor.constraint(equalToConstant: min(size.width, maximumWidth)),
+            scroll.heightAnchor.constraint(equalToConstant: size.height + 12),
+        ])
         return effect
     }
 
