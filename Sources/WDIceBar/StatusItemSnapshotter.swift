@@ -178,17 +178,22 @@ final class StatusItemSnapshotter {
         capture(excluding: ownPID, excludingTitles: excludingTitles, maximumX: nil)
     }
 
-    /// Moves a real status item immediately beside another real item. It is deliberately
-    /// transactional: reports the precise failed stage unless WindowServer confirms adjacency.
+    /// Layout changes require confirmed adjacency. Temporary activation can instead
+    /// accept any stable visible position, without rearranging an already clickable item.
     @discardableResult
-    func move(windowID: CGWindowID, beside targetID: CGWindowID, onRight: Bool) async -> MoveResult {
+    func move(windowID: CGWindowID, beside targetID: CGWindowID, onRight: Bool,
+              acceptingVisibleFrameIn bounds: CGRect? = nil, restoreCursorPosition: Bool = true) async -> MoveResult {
         guard accessibilityIsTrusted(prompting: true) else { return .accessibilityDenied }
         guard await waitForPointerIdle() else { return .userInputBusy }
         let cursor = MenuBarCursorGuard(hideCursor: false)
-        defer { cursor.finish() }
+        defer { cursor.finish(restorePosition: restoreCursorPosition) }
 
         var lastRoutingFailure: MenuBarEventRouter.Result?
         for _ in 0..<3 {
+            // Activation needs a clickable item, not a particular neighbour.
+            // Do not drag again if the previous attempt already exposed it.
+            if let bounds, let frame = windowFrame(for: windowID), bounds.contains(frame),
+               await waitForVisibleFrame(of: windowID, within: bounds) { return .moved }
             guard
                 let item = statusWindow(for: windowID),
                 let target = statusWindow(for: targetID),
@@ -209,14 +214,21 @@ final class StatusItemSnapshotter {
                 x: onRight ? target.frame.maxX : target.frame.minX,
                 y: target.frame.midY
             )
-            let routingResult = await postCommandDrag(item: item, target: target, destination: destination, source: source)
+            let routingResult = await postCommandDrag(item: item, target: target, destination: destination,
+                source: source, restoreCursorPosition: restoreCursorPosition)
             guard routingResult == .delivered else {
                 lastRoutingFailure = routingResult
                 try? await Task.sleep(for: .milliseconds(80))
                 continue
             }
 
-            if await waitForAdjacency(of: windowID, beside: targetID, onRight: onRight) {
+            let confirmed: Bool
+            if let bounds {
+                confirmed = await waitForVisibleFrame(of: windowID, within: bounds)
+            } else {
+                confirmed = await waitForAdjacency(of: windowID, beside: targetID, onRight: onRight)
+            }
+            if confirmed {
                 return .moved
             }
             try? await Task.sleep(for: .milliseconds(80))
@@ -254,9 +266,11 @@ final class StatusItemSnapshotter {
     /// macOS requires Accessibility permission for synthesized input, so the first click can
     /// display the system permission prompt instead of silently doing nothing.
     @discardableResult
-    func click(windowID: CGWindowID, mouseButton: CGMouseButton, promptingForAccessibility: Bool, preserveCursorPosition: Bool = false) async -> Bool {
+    func click(windowID: CGWindowID, mouseButton: CGMouseButton, promptingForAccessibility: Bool,
+               preserveCursorPosition: Bool = false, within bounds: CGRect? = nil) async -> Bool {
         guard accessibilityIsTrusted(prompting: promptingForAccessibility),
-              let frame = windowFrame(for: windowID),
+              let item = statusWindow(for: windowID),
+              bounds?.contains(item.frame) ?? true,
               let source = CGEventSource(stateID: .hidSystemState)
         else {
             return false
@@ -265,9 +279,8 @@ final class StatusItemSnapshotter {
         let cursor = MenuBarCursorGuard()
         var restoreCursor = true
         defer { cursor.finish(restorePosition: restoreCursor) }
-        let point = CGPoint(x: frame.midX, y: frame.midY)
-        guard let item = statusWindow(for: windowID),
-              let down = menuBarEvent(type: mouseButton == .right ? .rightMouseDown : .leftMouseDown,
+        let point = CGPoint(x: item.frame.midX, y: item.frame.midY)
+        guard let down = menuBarEvent(type: mouseButton == .right ? .rightMouseDown : .leftMouseDown,
                                       location: point, targetWindowID: item.id, ownerPID: item.ownerPID,
                                       source: source, flags: []),
               let up = menuBarEvent(type: mouseButton == .right ? .rightMouseUp : .leftMouseUp,
@@ -298,7 +311,7 @@ final class StatusItemSnapshotter {
         case failed(String)
     }
 
-    func revealForClick(windowID: CGWindowID, within bounds: CGRect) async -> RevealResult {
+    func revealForClick(windowID: CGWindowID, within bounds: CGRect, keepingCursorAtItem: Bool = false) async -> RevealResult {
         let windows = statusItemWindows().sorted { $0.frame.minX < $1.frame.minX }
         guard let index = windows.firstIndex(where: { $0.id == windowID }) else { return .failed("找不到原生菜单项") }
         let item = windows[index]
@@ -316,7 +329,8 @@ final class StatusItemSnapshotter {
             return .failed("没有可用位置容纳该图标")
         }
         let placement = TemporaryPlacement(windowID: item.id, returnAnchorID: neighbor.id, onRight: onRight)
-        let result = await move(windowID: item.id, beside: target.id, onRight: false)
+        let result = await move(windowID: item.id, beside: target.id, onRight: false,
+            acceptingVisibleFrameIn: bounds, restoreCursorPosition: !keepingCursorAtItem)
         if result == .moved, let frame = windowFrame(for: item.id), bounds.contains(frame) {
             return .ready(placement)
         }
@@ -431,10 +445,11 @@ final class StatusItemSnapshotter {
         item: StatusWindow,
         target: StatusWindow,
         destination: CGPoint,
-        source: CGEventSource
+        source: CGEventSource,
+        restoreCursorPosition: Bool
     ) async -> MenuBarEventRouter.Result {
         let gestureCursor = MenuBarCursorGuard()
-        defer { gestureCursor.finish() }
+        defer { gestureCursor.finish(restorePosition: restoreCursorPosition) }
         guard
             let mouseDown = menuBarEvent(
                 type: .leftMouseDown,
@@ -505,7 +520,35 @@ final class StatusItemSnapshotter {
         return event
     }
 
+    struct VisiblePlacement {
+        let bounds: CGRect
+        private var previousFrame: CGRect?
+
+        init(bounds: CGRect) { self.bounds = bounds }
+
+        mutating func observe(_ frame: CGRect?) -> Bool {
+            guard let frame, frame.width > 0, frame.height > 0,
+                  abs(frame.minY - bounds.minY) <= 1, bounds.contains(frame) else {
+                previousFrame = nil
+                return false
+            }
+            defer { previousFrame = frame }
+            return previousFrame == frame
+        }
+    }
+
+    private func waitForVisibleFrame(of windowID: CGWindowID, within bounds: CGRect) async -> Bool {
+        var placement = VisiblePlacement(bounds: bounds)
+        for _ in 0..<60 {
+            guard !Task.isCancelled else { return false }
+            if placement.observe(windowFrame(for: windowID)) { return true }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        return false
+    }
+
     private func waitForAdjacency(of windowID: CGWindowID, beside targetID: CGWindowID, onRight: Bool) async -> Bool {
+        var previousAdjacentFrames: (item: CGRect, target: CGRect)?
         for _ in 0..<60 {
             guard !Task.isCancelled else { return false }
             if
@@ -516,8 +559,18 @@ final class StatusItemSnapshotter {
                     ? itemFrame.minX >= targetFrame.maxX - 2
                     : itemFrame.maxX <= targetFrame.minX + 2
                 if isOnCorrectSide, areAdjacentInMenuBar(windowID, targetID, onRight: onRight) {
-                    return true
+                    // A first matching position may still be a drag/reflow frame.
+                    // Two identical observations allow clicking immediately after
+                    // confirmation without a separate fixed activation delay.
+                    if let previousAdjacentFrames,
+                       previousAdjacentFrames.item == itemFrame,
+                       previousAdjacentFrames.target == targetFrame { return true }
+                    previousAdjacentFrames = (itemFrame, targetFrame)
+                } else {
+                    previousAdjacentFrames = nil
                 }
+            } else {
+                previousAdjacentFrames = nil
             }
             try? await Task.sleep(for: .milliseconds(25))
         }

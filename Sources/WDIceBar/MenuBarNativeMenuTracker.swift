@@ -1,10 +1,42 @@
 import CoreGraphics
 import Foundation
 
-/// NSMenu's tracking loop can consume Escape and menu selections before an
-/// NSEvent monitor sees them. Follow the presented window's lifetime instead.
+/// Observe native windows, but never restore a temporary icon solely because a
+/// window disappeared. User input must request dismissal first.
 @MainActor
 final class MenuBarNativeMenuTracker {
+    struct DismissalState {
+        private var userRequestedDismissal = false
+        private var emptySamples = 0
+        private var pointerIsOutside = false
+        private var pointerAwaySamples = 0
+
+        mutating func requestDismissal() {
+            userRequestedDismissal = true
+        }
+
+        mutating func observePointer(isOutside: Bool) {
+            pointerIsOutside = isOutside
+            if !isOutside { pointerAwaySamples = 0 }
+        }
+
+        mutating func observe(isVisible: Bool) -> Bool {
+            if pointerIsOutside {
+                pointerAwaySamples += 1
+                if pointerAwaySamples >= 8 { return true }
+            }
+            if isVisible {
+                emptySamples = 0
+                return false
+            }
+            // A closed/unrecognized interface alone must not hide its anchor.
+            guard userRequestedDismissal else { return false }
+            emptySamples += 1
+            // At 100 ms per sample, allow 0.8 s for popover/submenu transitions.
+            return emptySamples >= 8
+        }
+    }
+
     private struct Window {
         let id: CGWindowID
         let frame: CGRect
@@ -14,7 +46,10 @@ final class MenuBarNativeMenuTracker {
     private let baseline: Set<CGWindowID>
     private let itemFrame: CGRect
     private var task: Task<Void, Never>?
-    private var hasSeenInterface = false
+    private var dismissal = DismissalState()
+    private var interfaceFrames: [CGRect] = []
+    private var lastInterfaceFrames: [CGRect] = []
+    private var hasRecognizedInterface = false
     private(set) var hasVisibleInterface = false
 
     init(itemFrame: CGRect) {
@@ -24,29 +59,35 @@ final class MenuBarNativeMenuTracker {
 
     func start(onDismiss: @escaping @MainActor () -> Void) {
         task = Task { [weak self] in
-            var emptySamples = 0
-            var samples = 0
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(100))
                 guard !Task.isCancelled, let self else { return }
-                samples += 1
-                self.hasVisibleInterface = Self.windows().contains { window in
+                self.interfaceFrames = Self.windows().filter { window in
                     !self.baseline.contains(window.id) && self.isPresentation(window)
-                }
-                if self.hasVisibleInterface {
-                    self.hasSeenInterface = true
-                    emptySamples = 0
-                } else {
-                    emptySamples += 1
-                    // Allow two samples for transitions between menu/submenu
-                    // windows. A plain action with no interface also completes.
-                    if (self.hasSeenInterface && emptySamples >= 2) || (!self.hasSeenInterface && samples >= 15) {
-                        onDismiss()
-                        return
-                    }
+                }.map(\.frame)
+                self.hasVisibleInterface = !self.interfaceFrames.isEmpty
+                if self.hasVisibleInterface { self.lastInterfaceFrames = self.interfaceFrames }
+                self.hasRecognizedInterface = self.hasRecognizedInterface || self.hasVisibleInterface
+                if self.dismissal.observe(isVisible: self.hasVisibleInterface) {
+                    onDismiss()
+                    return
                 }
             }
         }
+    }
+
+    func requestDismissal(at point: CGPoint?) {
+        // Clicking the retained real icon may reopen its menu; keep it in place.
+        if let point, itemFrame.insetBy(dx: -8, dy: -8).contains(point) { return }
+        dismissal.requestDismissal()
+    }
+
+    func observePointerMovement(at point: CGPoint) {
+        // If a custom interface cannot be recognized, retain the icon until an
+        // explicit click/Escape instead of guessing where its menu ends.
+        guard hasRecognizedInterface else { return }
+        dismissal.observePointer(isOutside: MenuBarDismissalPolicy.isOutsideInteraction(point,
+            itemFrame: itemFrame, interfaceFrames: interfaceFrames.isEmpty ? lastInterfaceFrames : interfaceFrames))
     }
 
     func stop() {

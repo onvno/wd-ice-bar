@@ -105,4 +105,50 @@ struct StatusItemWindowCatalogTests {
         #expect(!StatusItemWindowCatalog.isUserMenuBarItem(window(2, title: "", x: -5000)))
     }
 
+    @Test func externalDisplayItemsKeepTheirIDsWhenBackingWindowsAreTallerAndToTheRight() throws {
+        // Recorded on the user's external display after restoring menu-bar access.
+        let real = window(112876, title: "Item-0", x: -5401, width: 46, height: 30)
+        let backing = window(112877, title: "com.dichat.desktop", x: -3671, width: 46, height: 33)
+        let toggle = window(112835, title: "WDIceBar.Toggle.v1", x: -355, width: 22, height: 30)
+        let toggleBacking = window(112836, title: "local.wd-ice-bar", x: 1375, width: 22, height: 33)
+        let divider = window(112837, title: "WDIceBar.Divider.v1", x: -5355, width: 5000, height: 30)
+        let dividerBacking = window(112838, title: "local.wd-ice-bar", x: -3625, width: 5000, height: 33)
+        let clock = window(112418, title: "Clock", x: -106, width: 106, height: 30)
+        let clockBacking = window(112421, title: "", x: 1624, width: 106, height: 33)
+        let catalog = StatusItemWindowCatalog.realWindows(
+            [real, backing, toggle, toggleBacking, divider, dividerBacking, clock, clockBacking],
+            screenWidths: [1728, 1920])
+        #expect(catalog.map(\.id) == [112876, 112835, 112837, 112418])
+        let item = try #require(catalog.first)
+        #expect(item.itemBundleID == "com.dichat.desktop")
+        #expect(item.exclusionKey == "com.dichat.desktop|Item-0")
+        #expect(catalog.filter { StatusItemWindowCatalog.isUserMenuBarItem($0) }.count == 3)
+    }
+
+    @Test func equalHeightAndShorterBackingCopiesBothResolveToOnePrimary() {
+        let real = window(1, title: "Item-0", x: 1389, width: 57)
+        let equalHeight = window(2, title: "com.example.app", x: -341, width: 57)
+        let shorter = window(3, title: "com.example.app", x: -341, width: 57, height: 30)
+        let catalog = StatusItemWindowCatalog.realWindows([real, equalHeight, shorter], screenWidths: [1728, 1920])
+        #expect(catalog.map(\.id) == [1])
+        #expect(catalog.first?.itemBundleID == "com.example.app")
+    }
+
+    @Test func removedZeroSizedHostWindowsNeverBecomeShelfItems() {
+        let real = window(1, title: "Item-0", x: -5434, width: 33, height: 30)
+        let retired = window(2, title: "local.wd-ice-bar", x: -5434, width: 0, height: 0)
+        let noWidth = window(3, title: "Item-0", x: -5434, width: 0)
+        let noHeight = window(4, title: "Item-0", x: -5434, height: 0)
+        #expect(StatusItemWindowCatalog.realWindows([real, retired, noWidth, noHeight], screenWidths: [1728]).map(\.id) == [1])
+        for item in [retired, noWidth, noHeight] {
+            #expect(!StatusItemWindowCatalog.isUserMenuBarItem(item))
+        }
+    }
+
+    @Test func namedPrimaryItemsAreNotPairedWithEachOtherAcrossDisplays() {
+        let first = window(1, title: "Item-0", x: 1389, height: 33)
+        let second = window(2, title: "Item-0", x: -341, height: 30)
+        #expect(StatusItemWindowCatalog.realWindows([first, second], screenWidths: [1728]).map(\.id) == [1, 2])
+    }
+
 }

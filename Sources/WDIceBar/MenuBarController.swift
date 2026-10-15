@@ -502,7 +502,7 @@ final class MenuBarController: NSObject {
         installLocalDismissMonitor()
         guard outsideClickMonitor == nil else { return }
         let generation = dismissalGeneration
-        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .leftMouseUp, .rightMouseUp, .mouseMoved, .keyDown]) { [weak self] event in
             // Routed input can arrive after activation finishes. Never treat our
             // synthetic click/drag as a user dismissing the menu it just opened.
             guard MenuBarDismissalPolicy.isUserInput(event.cgEvent) else { return }
@@ -510,17 +510,25 @@ final class MenuBarController: NSObject {
                 guard let self, self.dismissalGeneration == generation,
                       !self.isActivatingNativeItem, !self.isRecoveringImages else { return }
                 if event.type == .keyDown, event.keyCode != 53 { return }
+                if event.type == .mouseMoved {
+                    if self.nativeContextMenuIsOpen, let point = event.cgEvent?.location {
+                        self.nativeMenuTracker?.observePointerMovement(at: point)
+                    }
+                    return
+                }
                 switch self.state {
                 case .shown:
                     if self.nativeContextMenuIsOpen {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(180)) { [weak self] in
-                            guard let self, self.dismissalGeneration == generation else { return }
-                            self.finishNativeInteractionIfDismissed()
-                        }
+                        // Wait for the user's mouse-up, never interrupt a held
+                        // click or treat our forwarded click as dismissal.
+                        guard event.type == .leftMouseUp || event.type == .rightMouseUp || event.type == .keyDown else { return }
+                        self.requestNativeDismissal(at: event.type == .keyDown ? nil : event.cgEvent?.location)
                     } else {
+                        guard event.type != .leftMouseUp, event.type != .rightMouseUp else { return }
                         self.panel.close()
                     }
                 case .arranging where self.isNativeMenuBarClick():
+                    guard event.type != .leftMouseUp, event.type != .rightMouseUp else { return }
                     self.hideNativeItems()
                 case .hidden, .arranging:
                     break
@@ -532,24 +540,26 @@ final class MenuBarController: NSObject {
     private func installLocalDismissMonitor() {
         guard localClickMonitor == nil else { return }
         let generation = dismissalGeneration
-        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
+        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseUp, .rightMouseUp, .mouseMoved, .keyDown]) { [weak self] event in
             guard MenuBarDismissalPolicy.isUserInput(event.cgEvent) else { return event }
             if let self, self.dismissalGeneration == generation, !self.isActivatingNativeItem, !self.isRecoveringImages, self.nativeContextMenuIsOpen,
                event.window !== self.panel, (event.type != .keyDown || event.keyCode == 53) {
-                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(180)) { [weak self] in
-                    guard let self, self.dismissalGeneration == generation else { return }
-                    self.finishNativeInteractionIfDismissed()
+                if event.type == .mouseMoved, let point = event.cgEvent?.location {
+                    self.nativeMenuTracker?.observePointerMovement(at: point)
+                } else {
+                    self.requestNativeDismissal(at: event.type == .keyDown ? nil : event.cgEvent?.location)
                 }
             }
             return event
         }
     }
 
-    private func finishNativeInteractionIfDismissed() {
-        // A menu-item click may open a submenu or a popover. Moving the anchor
-        // while that interface is still visible would dismiss it prematurely.
-        guard nativeMenuTracker?.hasVisibleInterface != true else { return }
-        hideNativeItems()
+    private func requestNativeDismissal(at point: CGPoint?) {
+        if let nativeMenuTracker {
+            nativeMenuTracker.requestDismissal(at: point)
+        } else {
+            hideNativeItems()
+        }
     }
 
     private func isNativeMenuBarClick() -> Bool {
@@ -657,7 +667,11 @@ final class MenuBarController: NSObject {
 
         activationTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            try? await Task.sleep(for: .milliseconds(220))
+            let cursor = MenuBarCursorGuard(hideCursor: false)
+            var restoreCursor = true
+            defer { cursor.finish(restorePosition: restoreCursor) }
+            // The proxy closes synchronously before this task starts. Native
+            // movement already waits for mouse release and a confirmed layout.
             guard let bounds = self.menuBarVisibleBounds(on: preferredScreen) else {
                 self.isActivatingNativeItem = false
                 self.activationTask = nil
@@ -665,7 +679,7 @@ final class MenuBarController: NSObject {
                 self.reportActivationFailure("无法确定目标显示器的菜单栏可见区域")
                 return
             }
-            let reveal = await self.snapshotter.revealForClick(windowID: windowID, within: bounds)
+            let reveal = await self.snapshotter.revealForClick(windowID: windowID, within: bounds, keepingCursorAtItem: !isTest)
             switch reveal {
             case .failed(let message):
                 self.isActivatingNativeItem = false
@@ -679,7 +693,6 @@ final class MenuBarController: NSObject {
 #if MENU_BAR_INTEGRATION
             print("ACTIVATION revealed target=\(windowID) moved=\(self.temporaryPlacement != nil)")
 #endif
-            try? await Task.sleep(for: .milliseconds(100))
             let needsImage = self.cachedSnapshots.first { $0.id == windowID }.map { $0.usesUnavailableImage || $0.usesApplicationIcon } ?? true
             if needsImage, let screen = preferredScreen,
                let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
@@ -695,7 +708,8 @@ final class MenuBarController: NSObject {
                 }
             }
             let didClick = await self.snapshotter.click(windowID: windowID, mouseButton: mouseButton,
-                                                       promptingForAccessibility: true, preserveCursorPosition: isTest)
+                promptingForAccessibility: true, preserveCursorPosition: isTest, within: bounds)
+            if didClick, !isTest { restoreCursor = false }
 #if MENU_BAR_INTEGRATION
             print("ACTIVATION clicked=\(didClick)")
 #endif
